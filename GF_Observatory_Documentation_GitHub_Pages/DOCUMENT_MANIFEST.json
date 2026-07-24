@@ -1,0 +1,227 @@
+{
+  "schema_id": "gf-observatory.documentation-manifest",
+  "schema_version": "1.0",
+  "generated_at": "2026-07-24",
+  "files": [
+    {
+      "path": "CHANGELOG.md",
+      "sha256": "94857b4b275580bbbc3dcf6d29f69992ca3a988f92d38fd8155cd4c647fc73fc",
+      "size_bytes": 1223
+    },
+    {
+      "path": "README.md",
+      "sha256": "9c24977766b02f23c047f00fe972d75022c57f097faeb1e24403a1c458ea4023",
+      "size_bytes": 1639
+    },
+    {
+      "path": "docs/00_START_HERE.md",
+      "sha256": "1435e9a8984a896e03ae292d87a392e23ea6da34069fbe645bb96c60da3d108c",
+      "size_bytes": 1664
+    },
+    {
+      "path": "docs/DOCUMENTATION_MAP.md",
+      "sha256": "21ad279ca59e771c8c87600cee6d2eddf7783b3072124754ff158344a4fe42e1",
+      "size_bytes": 2539
+    },
+    {
+      "path": "docs/PRODUCT_OVERVIEW.md",
+      "sha256": "40704d9e40dcc5dd03909f3257b6987ad7ffebea998809631f921aa541c0d8ba",
+      "size_bytes": 1469
+    },
+    {
+      "path": "docs/SCOPE_AND_NON_GOALS.md",
+      "sha256": "32979d6da81922b57cb2c6cd2654b37cd41616eeb746cea3e9280f5b04cae551",
+      "size_bytes": 1051
+    },
+    {
+      "path": "docs/analysis/ANALYSIS_PROFILES.md",
+      "sha256": "73350b7af4b2266c20f5d67502df1369900d1e712cfca27e980dcb1de95bb122",
+      "size_bytes": 1356
+    },
+    {
+      "path": "docs/analysis/DIAGNOSTIC_MODEL.md",
+      "sha256": "826fbaf408e65977df3f75d491e8dfe310a169941a80d79cc4a3124930c234b2",
+      "size_bytes": 1236
+    },
+    {
+      "path": "docs/analysis/EVIDENCE_MATRIX.md",
+      "sha256": "f75db1e52209ae28a03b4eda77e463d3d255c2f794b8c373fbd2eb542616e1e6",
+      "size_bytes": 2608
+    },
+    {
+      "path": "docs/analysis/MATURITY_AND_READINESS.md",
+      "sha256": "f18c919a0b8642585ef4f86ffec572ba66a1c372d3ea36d964eccd6ad6d5f5f5",
+      "size_bytes": 1491
+    },
+    {
+      "path": "docs/analysis/PROJECT_HEALTH.md",
+      "sha256": "84a1aadbee68190386652d183c8196bad8df562d7f1e1c8a04679a8897891ab6",
+      "size_bytes": 1185
+    },
+    {
+      "path": "docs/architecture/ALIGNMENT_FRAME.md",
+      "sha256": "f4e2f2ecee13296c70c3fa6a971cdeeba3912f19b7ed53a6155e3652b2c384dd",
+      "size_bytes": 1714
+    },
+    {
+      "path": "docs/architecture/ARCHITECTURE_OVERVIEW.md",
+      "sha256": "7ade302c241e6411d581366bd2a0d3c04b82e00eede1c9d701575b1e82890fda",
+      "size_bytes": 2233
+    },
+    {
+      "path": "docs/architecture/COMPONENT_MAP.md",
+      "sha256": "61dc6675ee18768a64044b9f3cc47fe4d48b65325d239f4e520d3ceace4f146f",
+      "size_bytes": 2287
+    },
+    {
+      "path": "docs/architecture/DATA_FLOW.md",
+      "sha256": "2907d00e4d1de07088ca02ff47042a897ae2b046a493cfa41a5df8b68eee1974",
+      "size_bytes": 1307
+    },
+    {
+      "path": "docs/architecture/RUNTIME_FRAME.md",
+      "sha256": "d1b2b14786b43d49446e96d7fe1661dde76073ac468b389c0a0436aca79da3c1",
+      "size_bytes": 2768
+    },
+    {
+      "path": "docs/configuration/CONFIGURATION_REFERENCE.md",
+      "sha256": "72005018d5614543ae3a6e47e20bad0068eff61fa9268368806c63774d633208",
+      "size_bytes": 1638
+    },
+    {
+      "path": "docs/configuration/VARIABLE_AND_CONFIGURATION_LEDGER.md",
+      "sha256": "52acc7f54bbc6002bc9feac50b328810a8649a8d8e67b77f67aea5c012040d2a",
+      "size_bytes": 1732
+    },
+    {
+      "path": "docs/contracts/API_CONTRACT.md",
+      "sha256": "47ca368b291c45c218dd445410abd6dcc5b76e72b46f7a84fabf312fad26f6a6",
+      "size_bytes": 1899
+    },
+    {
+      "path": "docs/contracts/INDEPENDENCE_CONTRACT.md",
+      "sha256": "9761a1392acc0a41ba82a281868c1fa2faec205dba552fc481ae327e39eee5ed",
+      "size_bytes": 1094
+    },
+    {
+      "path": "docs/contracts/SCHEMA_ALIGNMENT_PROTOCOL.md",
+      "sha256": "2d58e671695a4248df8738cb5dbb1dd7722b0436cedfc4e30807ae407d0d35dc",
+      "size_bytes": 1445
+    },
+    {
+      "path": "docs/contracts/WORDBENCH_ARTIFACT_CONTRACT.md",
+      "sha256": "9bc2ad5a0bdb0bbcdb9ab0f70f98d1740b1597e1da2c4d8f1880421b23a7b28c",
+      "size_bytes": 1304
+    },
+    {
+      "path": "docs/decisions/ADR-0001-READ-ONLY-CONSUMER.md",
+      "sha256": "0c23de2d4fe26729b821c98b9500f39f9b91436473a58ad37c3f57f139e80d98",
+      "size_bytes": 651
+    },
+    {
+      "path": "docs/decisions/ADR-0002-INDEPENDENT-PRODUCT.md",
+      "sha256": "5ee8adc8c778cd2466e8b9d7b35405ae1de758d23b389b77f78bdc3827b462e6",
+      "size_bytes": 670
+    },
+    {
+      "path": "docs/decisions/ADR-0003-LOCAL-SQLITE-STORE.md",
+      "sha256": "1ed473e4da16ed36c50887d8b753e70d2c5e6f37794e99392cefeec5d5797cba",
+      "size_bytes": 636
+    },
+    {
+      "path": "docs/decisions/ADR-0004-CANONICAL-RUNTIME-FRAME.md",
+      "sha256": "3a14ad54a636e333019065be0979ed73e0ed287c21ce3b91d8f124c0d1629c3a",
+      "size_bytes": 726
+    },
+    {
+      "path": "docs/decisions/ADR-0005-SINGLE-ORCHESTRATOR.md",
+      "sha256": "ddc07aea5bb24ef47e90ffeaa221263e510f2f077b015b5bf794076dc84a04ac",
+      "size_bytes": 702
+    },
+    {
+      "path": "docs/decisions/ADR-0006-VERSIONED-PROFILES-AND-SCHEMAS.md",
+      "sha256": "652625e1179ecb1c4639d9dc2f84e88d7a89152c606e90034e764ec702b985bb",
+      "size_bytes": 691
+    },
+    {
+      "path": "docs/decisions/ADR-0007-CANONICAL-API-AND-TOOLS.md",
+      "sha256": "0da2da496d801d4cc325f2256874b633d57f57ada8b1c1059470c7e12f8fad86",
+      "size_bytes": 668
+    },
+    {
+      "path": "docs/decisions/ADR-0008-RETAIN-AUDIT-EVIDENCE.md",
+      "sha256": "685f59368d952986021fd852a270ebd5d425df8660e41c337490d655d5497120",
+      "size_bytes": 667
+    },
+    {
+      "path": "docs/decisions/ADR-0009-STATIC-PUBLIC-STATUS.md",
+      "sha256": "3ce1deae0b17965daf7a58f35f4e5be193a98536a51e7db14f750ae63d4eba93",
+      "size_bytes": 1841
+    },
+    {
+      "path": "docs/decisions/README.md",
+      "sha256": "80e8abeeac27296b99c93a1732b7bf96c71eda0e347d7a71c74f9ed4ad3e77d4",
+      "size_bytes": 1457
+    },
+    {
+      "path": "docs/ingestion/ARTIFACT_INGESTION.md",
+      "sha256": "7ceb35d97d7dee7cac7cf259253753f30c8b3427a4318227898e36ef097e7b85",
+      "size_bytes": 1252
+    },
+    {
+      "path": "docs/inventory/WORKSPACE_REGISTRY.md",
+      "sha256": "4549dbf33f3595d5ea8532adb65f01eb0e2fd63dc47b1e08fbc8e50abe57aa83",
+      "size_bytes": 1045
+    },
+    {
+      "path": "docs/operations/EVIDENCE_RETENTION.md",
+      "sha256": "2165ef9597bf98cf6dcbe89d894b739cf4f11773290165742bf03c41cd88d4a4",
+      "size_bytes": 1249
+    },
+    {
+      "path": "docs/operations/OBSERVATION_CYCLE.md",
+      "sha256": "ade49c7c5f7d7056bededd9125b2a4b992b1a3146376e84a93a1348f257510c9",
+      "size_bytes": 1391
+    },
+    {
+      "path": "docs/operations/SECURITY_AND_MUTABILITY.md",
+      "sha256": "9fa3ec3a7c46cf71986cce551eb9b19160f036cc38b06855b1da4b7dcc730e08",
+      "size_bytes": 1008
+    },
+    {
+      "path": "docs/operations/TOOLS_DASHBOARD_AND_API.md",
+      "sha256": "dfdf8a0a508dba405564e59a3a033a6fedc4f1d0d55ae4cbb4c78db1a3c44694",
+      "size_bytes": 1848
+    },
+    {
+      "path": "docs/publishing/GITHUB_PAGES_DEPLOYMENT.md",
+      "sha256": "e3174d6d3540e82f73295f656cd2e4e30a1fea97328f22fcc7abc40e8ed09660",
+      "size_bytes": 5318
+    },
+    {
+      "path": "docs/publishing/PUBLIC_STATUS_SITE.md",
+      "sha256": "43f333408fe88c8097215e3f6389a36d3b0237ef80c77d138c44b1f657460c3a",
+      "size_bytes": 4899
+    },
+    {
+      "path": "docs/reference/SCHEMA_INDEX.md",
+      "sha256": "5978dee4569e89d4c9d990e2c8551eae2eba85bd512d9c41466e1dba0a8259f5",
+      "size_bytes": 1783
+    },
+    {
+      "path": "docs/reference/STATUS_VALUES.md",
+      "sha256": "6c4083853961938b0c5b8859af40cc46c50e491624138ae23abe715e482683fe",
+      "size_bytes": 982
+    },
+    {
+      "path": "docs/reporting/REPORTING_OVERVIEW.md",
+      "sha256": "127472c55b920df13fb3c6175d1fb6cc26e664adb362f84b3103c429de895b8c",
+      "size_bytes": 1505
+    },
+    {
+      "path": "docs/usage/CLI_REFERENCE.md",
+      "sha256": "849bcb78cb2fb7d2a3e3e2e02d02ba37a1374a9da455218166f43c54578e83d4",
+      "size_bytes": 2177
+    }
+  ]
+}
