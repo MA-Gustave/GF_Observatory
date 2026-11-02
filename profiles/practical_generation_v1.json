@@ -1,0 +1,242 @@
+{
+  "schema_id": "gf-practical.profile",
+  "schema_version": "1.0",
+  "profile_id": "encyclopedic-procedural",
+  "profile_version": "1.0",
+  "description": "Functional semantic coverage; morphology and tense selection are language-specific.",
+  "domains": [
+    "encyclopedic",
+    "procedural"
+  ],
+  "capabilities": [
+    {
+      "id": "factual-present",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Énoncer un fait ou un état actuel",
+      "scenario_ids": [
+        "factual-present"
+      ]
+    },
+    {
+      "id": "past-event",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": true,
+      "description": "Décrire un événement révolu",
+      "scenario_ids": [
+        "past-event"
+      ]
+    },
+    {
+      "id": "past-state",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": true,
+      "description": "Décrire un état ou une habitude passée",
+      "scenario_ids": [
+        "past-state"
+      ]
+    },
+    {
+      "id": "future-reference",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une référence future",
+      "scenario_ids": [
+        "future-reference"
+      ]
+    },
+    {
+      "id": "factual-negation",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Nier une proposition",
+      "scenario_ids": [
+        "factual-negation"
+      ]
+    },
+    {
+      "id": "temporal-order",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une séquence temporelle",
+      "scenario_ids": [
+        "temporal-order"
+      ]
+    },
+    {
+      "id": "condition-real",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une condition réaliste",
+      "scenario_ids": [
+        "condition-real"
+      ]
+    },
+    {
+      "id": "possibility",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": true,
+      "description": "Exprimer une possibilité sans la convertir en fait",
+      "scenario_ids": [
+        "possibility"
+      ]
+    },
+    {
+      "id": "source-attribution",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": true,
+      "description": "Attribuer une affirmation à une source",
+      "scenario_ids": [
+        "source-attribution"
+      ]
+    },
+    {
+      "id": "quantity",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer des nombres et des mesures",
+      "scenario_ids": [
+        "quantity"
+      ]
+    },
+    {
+      "id": "location",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer des lieux et des relations spatiales",
+      "scenario_ids": [
+        "location"
+      ]
+    },
+    {
+      "id": "instruction",
+      "domains": [
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une directive",
+      "scenario_ids": [
+        "instruction"
+      ]
+    },
+    {
+      "id": "prohibition",
+      "domains": [
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une interdiction",
+      "scenario_ids": [
+        "prohibition"
+      ]
+    },
+    {
+      "id": "obligation",
+      "domains": [
+        "procedural"
+      ],
+      "required": true,
+      "description": "Exprimer une obligation",
+      "scenario_ids": [
+        "obligation"
+      ]
+    },
+    {
+      "id": "conditional-instruction",
+      "domains": [
+        "procedural"
+      ],
+      "required": true,
+      "description": "Donner une instruction conditionnelle",
+      "scenario_ids": [
+        "conditional-instruction"
+      ]
+    },
+    {
+      "id": "anteriority",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": false,
+      "description": "Expliciter l’antériorité",
+      "scenario_ids": [
+        "anteriority"
+      ]
+    },
+    {
+      "id": "process-ongoing",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": false,
+      "description": "Décrire un processus en cours",
+      "scenario_ids": [
+        "process-ongoing"
+      ]
+    },
+    {
+      "id": "passive-or-rephrase",
+      "domains": [
+        "encyclopedic",
+        "procedural"
+      ],
+      "required": false,
+      "description": "Exprimer une relation patient-agent",
+      "scenario_ids": [
+        "passive-or-rephrase"
+      ]
+    },
+    {
+      "id": "counterfactual",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": false,
+      "description": "Exprimer une hypothèse contraire aux faits",
+      "scenario_ids": [
+        "counterfactual"
+      ]
+    },
+    {
+      "id": "habitual",
+      "domains": [
+        "encyclopedic"
+      ],
+      "required": false,
+      "description": "Exprimer une habitude ou récurrence",
+      "scenario_ids": [
+        "habitual"
+      ]
+    }
+  ]
+}
