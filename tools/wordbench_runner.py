@@ -18,6 +18,13 @@ import sys
 import threading
 from typing import Callable
 
+try:  # package import and direct `python tools/wordbench_runner.py` execution
+    from tools.gf_locator import resolve_gf_executable, missing_gf_message
+    from tools.windows_process import background_process_options
+except ModuleNotFoundError:
+    from gf_locator import resolve_gf_executable, missing_gf_message
+    from windows_process import background_process_options
+
 
 PUBLIC_ROLES = ("Syntax", "Grammar", "Lang", "Cat", "Res")
 
@@ -90,6 +97,23 @@ def language_source(rgl_root: Path, language: dict) -> tuple[Path | None, str]:
     return None, "no_public_module"
 
 
+
+def light_source(rgl_root: Path, language: dict) -> tuple[Path | None, str]:
+    """Small, low-cost *structural* GF probe; not a full Grammar/Syntax test.
+
+    Never silently substitute a full grammar: a heavy compile must be requested
+    with quick, and absence of Cat is an untested result, not a failure.
+    """
+    root = rgl_root.resolve()
+    for relative in language.get('modules', {}).get('Cat', []):
+        path = (root / relative).resolve()
+        if (path.is_relative_to(root) and path.is_file() and not path.is_symlink()
+                and not any(part in {'api', 'prelude', 'TEMPLATE', 'abstract_ext'}
+                            for part in path.relative_to(root).parts)):
+            return path, 'Cat'
+    return None, 'light_cat_module_absent'
+
+
 def python_console() -> Path:
     exe = Path(sys.executable)
     if os.name == "nt" and exe.name.lower() == "pythonw.exe":
@@ -126,12 +150,18 @@ def make_command(
     common = ["--language-path", str(source.parent), "--rgl-root", str(rgl_root), "--output-root", str(output_dir / "wb_artifacts")]
     if gf_executable is not None:
         common.extend(["--gf-executable", str(gf_executable)])
-    if mode == "quick":
-        # Canonical WB CLI uses --gf-exe and --out-root, not practical CLI spellings.
-        cmd = [exe, "-m", "gf_wordbench", "validate", "--mode", "quick",
-               "--language-path", str(source.parent), "--target", str(source),
-               "--rgl-root", str(rgl_root), "--out-root", str(output_dir / "wb_artifacts"),
-               "--compile-timeout", "70", "--no-compare-previous"]
+    if mode in ("quick", "light"):
+        # The supplied WordBench CLI currently routes its public ValidateCommandRequest
+        # to a provider requiring RunConfig (GF-WB-CONFIG-914). Rather than change
+        # WordBench, invoke its real GF command builder through an isolated probe.
+        probe_candidates = (Path(__file__).resolve().parent / "wordbench_quick_probe.py",
+                            Path(__file__).resolve().parent / "tools" / "wordbench_quick_probe.py")
+        probe = next((p for p in probe_candidates if p.is_file()), None)
+        if probe is None:
+            raise ValueError("Composant Observatory tools/wordbench_quick_probe.py absent; réinstalle le dépôt complet")
+        cmd = [exe, "-u", str(probe), "--source", str(source),
+               "--rgl-root", str(rgl_root),
+               "--out-root", str(output_dir / "wb_artifacts" / mode / code)]
         if gf_executable is not None:
             cmd.extend(["--gf-exe", str(gf_executable)])
         return cmd
@@ -152,13 +182,52 @@ def make_command(
     raise ValueError("Mode WordBench invalide (quick ou practical)")
 
 
+
+
+def classify_quick_result(status: str, exit_code: int | None, output: str) -> tuple[str, str | None]:
+    """Separate compilation failures from interruption, timeout and setup errors.
+
+    A quick run does not measure semantic readiness. Windows NTSTATUS values
+    may be reported as unsigned 32-bit exit codes by Python on Windows.
+    """
+    if status == "ok":
+        return status, None
+    if status == "timeout":
+        return status, "wordbench_timeout"
+    if status == "cancelled":
+        return status, "cancelled"
+    if status != "error":
+        return status, None
+    if (exit_code is not None and (exit_code & 0xFFFFFFFF) == 0xC000013A) or (
+        exit_code == 23 and "0xC000013A" in output
+    ):
+        return "interrupted", "windows_control_c_exit"
+    if "Compilateur GF introuvable" in output or "Le compilateur GF ne démarre pas" in output:
+        return status, "gf_compiler_missing_or_unavailable"
+    if "Composant WordBench de compilation indisponible" in output:
+        return status, "wordbench_compile_component_unavailable"
+    if "artefact attendu est absent" in output:
+        return status, "gf_artifact_missing"
+    if "The validation application requires a resolved RunConfig" in output:
+        return status, "wordbench_runconfig_unresolved"
+    if " does not exist." in output and "File " in output:
+        return status, "gf_dependency_missing"
+    if "Internal error" in output or "CallStack (from HasCallStack)" in output:
+        return status, "gf_compiler_internal_error"
+    if "constant not found:" in output:
+        return status, "gf_api_symbol_missing"
+    if "unknown label" in output:
+        return status, "gf_typecheck_error"
+    return status, "gf_compilation_failed_or_wordbench_error"
+
 def _stop_process(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                           capture_output=True, timeout=8, check=False)
+                           capture_output=True, timeout=8, check=False,
+                           **background_process_options())
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()
     else:
@@ -173,10 +242,7 @@ def _execute(cmd: list[str], env: dict[str, str], timeout: int, stop: threading.
         return "cancelled", None, "Annulation demandée"
     kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True,
               "encoding": "utf-8", "errors": "replace", "env": env}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
+    kwargs.update(background_process_options(new_process_group=True))
     proc = subprocess.Popen(cmd, **kwargs)
     # communicate(timeout) is bounded; caller is responsible for log truncation.
     # Cancellation between individual runs is supported; current run finishes or times out.
@@ -204,7 +270,7 @@ def run_batch(
     """Execute only the explicit set, sequentially; never guess missing golden fixtures."""
     if not 5 <= timeout <= 3600:
         raise ValueError("Le délai doit être entre 5 et 3600 secondes")
-    if mode not in {"quick", "practical"}:
+    if mode not in {"quick", "light", "practical"}:
         raise ValueError("Mode invalide")
     rgl_root, wordbench_root, output_dir = (Path(x).resolve() for x in (rgl_root, wordbench_root, output_dir))
     resolved_wb = resolve_wordbench_root(wordbench_root)
@@ -216,6 +282,12 @@ def run_batch(
     env = wordbench_environment(wordbench_root)
     if mode == "practical" and not (wordbench_root / "src/gf_wordbench/practical/cli.py").is_file():
         raise ValueError("Extension gf_wordbench.practical absente du WordBench installé")
+    # One preflight before the entire batch, never 67 subprocesses failing the
+    # same missing-compiler check. An explicit invalid path remains an error.
+    resolved_gf = resolve_gf_executable(gf_executable, workspace=rgl_root.parent)
+    if resolved_gf is None:
+        raise ValueError(missing_gf_message(rgl_root.parent))
+    gf_executable = resolved_gf
     if not isinstance(inventory.get("languages"), list):
         raise ValueError("Inventaire incorrect")
     by_code = {x["code"]: x for x in inventory["languages"]}
@@ -230,11 +302,15 @@ def run_batch(
         if stop.is_set():
             break
         lang = by_code[code]
-        source, role = language_source(rgl_root, lang)
+        source, role = (light_source(rgl_root, lang) if mode == "light" else language_source(rgl_root, lang))
         record: dict = {"code": code, "mode": mode, "source_module": str(source) if source else None,
                         "status": "not_tested", "exit_code": None, "reason": None, "log_path": None,
+                        "timeout_seconds": timeout, "duration_seconds": None, "probe_scope": "Cat module only" if mode == "light" else mode,
                         "wordbench_language_key": wordbench_language_key(source, rgl_root) if source else None}
         if source is None:
+            # A language without Cat cannot run the Cat-only probe. This is a
+            # scope limitation, never a linguistic failure (e.g. Kal).
+            record["status"] = "not_applicable" if mode == "light" and role == "light_cat_module_absent" else "not_tested"
             record["reason"] = role
         else:
             try:
@@ -243,16 +319,15 @@ def run_batch(
                                    practical_profile=practical_profile,
                                    validation_profiles_root=validation_profiles_root,
                                    gf_executable=gf_executable, python_executable=python_executable)
+                started = __import__('time').monotonic()
                 status, exit_code, captured = _execute(cmd, env, timeout, stop)
-                record["status"] = status
+                record['duration_seconds'] = round(__import__('time').monotonic() - started, 2)
+                if status == 'timeout':
+                    captured += (f"\n[Observatory] Limite de {timeout} secondes atteinte sur {source.name}. "
+                                 "Ce délai ne prouve pas une erreur grammaticale. "
+                                 "Pour un diagnostic moins coûteux, choisir le mode light (Cat uniquement).\n")
+                record["status"], record["reason"] = classify_quick_result(status, exit_code, captured)
                 record["exit_code"] = exit_code
-                if status == "error":
-                    record["reason"] = ("wordbench_runconfig_unresolved" if
-                        "The validation application requires a resolved RunConfig" in captured else "wordbench_exit_nonzero")
-                elif status == "timeout":
-                    record["reason"] = "wordbench_timeout"
-                else:
-                    record["reason"] = None
                 log_file = log_dir / f"{code}_{mode}.log"
                 # Keep capped logs, and do not persist executable command or environment secrets.
                 log_file.write_text(captured[-600_000:], encoding="utf-8")
@@ -278,11 +353,13 @@ def run_batch(
               "mode": mode, "generated_at": datetime.now(timezone.utc).isoformat(),
               "rgl_root": str(rgl_root), "wordbench_root": str(wordbench_root),
               "requested": wanted, "completed": len(records), "cancelled": stop.is_set(),
-              "results": records,
+              "batch_results": records, "results": records,
               "note": "quick = module compile/check only, never evidence of semantic readiness; practical requires verified WordBench gold scenarios"}
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / ("wordbench_quick_results.json" if mode == "quick" else "wordbench_practical_executions.json")
-    if mode == "quick" and path.is_file():
+    path = output_dir / {"quick": "wordbench_quick_results.json",
+                         "light": "wordbench_light_results.json",
+                         "practical": "wordbench_practical_executions.json"}[mode]
+    if mode in ("quick", "light") and path.is_file():
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
             if (previous.get("schema_id") == result["schema_id"] and previous.get("rgl_root") == str(rgl_root)):
@@ -303,7 +380,7 @@ def main(argv=None):
     p.add_argument("--rgl-root", type=Path, required=True)
     p.add_argument("--wordbench-root", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
-    p.add_argument("--mode", choices=("quick", "practical"), default="quick")
+    p.add_argument("--mode", choices=("light", "quick", "practical"), default="quick")
     p.add_argument("--codes", nargs="+", required=True)
     p.add_argument("--timeout", type=int, default=90)
     p.add_argument("--practical-profile", type=Path)

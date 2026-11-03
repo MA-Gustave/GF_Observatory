@@ -29,6 +29,9 @@ def fixture_sources(tmp_path: Path):
         path = rgl / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("resource Dummy = {} ;", encoding="utf-8")
+    compiler = tmp_path / 'gf.exe'
+    compiler.write_text('fake, never executed by these tests')
+    compiler.chmod(0o755)
     return rgl
 
 
@@ -188,3 +191,32 @@ def test_wordbench_nonzero_is_visible_but_not_grammar_failure(tmp_path, monkeypa
     assert eng['wordbench_quick_exit_code'] == 2
     assert eng['status'] == 'unverified'
     assert diag2['catalog']['counts']['needs_work'] == 0
+
+
+def test_gui_preserves_failed_language_as_selection(tmp_path):
+    import os
+    if os.name != 'nt' and not os.environ.get('DISPLAY'):
+        pytest.skip('Test graphique nécessite un serveur X')
+    try:
+        window = UI.DiagnosticWindow()
+    except Exception:  # GUI unsupported in the current environment
+        pytest.skip('Tkinter non disponible')
+    try:
+        window.withdraw()
+        result = {
+          'inventory': {'languages': []}, 'output_dir': str(tmp_path),
+          'diagnostic': {'rgl_root': 'rgl', 'reports_root': None,
+                         'tools': {}, 'repositories': {}},
+          'catalog': {'counts': {'ready': 0, 'needs_work': 0, 'unverified': 2},
+                      'languages': [
+                          {'code':'Afr','status':'unverified','source_dirs':[],'structural_status':'candidate','unverified':[],'missing':[]},
+                          {'code':'Eng','status':'unverified','source_dirs':[],'structural_status':'candidate','unverified':[],
+                           'missing':[],'wordbench_quick':'error','wordbench_quick_reason':'gf_compilation_failed_or_wordbench_error'}]}
+        }
+        window._show_result(result, preferred_code='Eng')
+        assert window.tree.selection() == ('Eng',)
+        assert window._last_failed_code == 'Eng'
+        window._render_rows()
+        assert window.tree.selection() == ('Eng',)
+    finally:
+        window.destroy()

@@ -23,6 +23,9 @@ def sample(tmp_path):
     pkg = project / 'src/gf_wordbench'
     pkg.mkdir(parents=True)
     (pkg / '__init__.py').touch()
+    compiler = tmp_path / 'gf.exe'
+    compiler.write_text('fake, never executed by these tests')
+    compiler.chmod(0o755)
     return root, project
 
 
@@ -32,7 +35,7 @@ def test_phantom_codes_are_not_languages(tmp_path):
     assert {lang['code'] for lang in result['languages']} == {'Eng', 'Sqi'}
 
 
-def test_selective_quick_uses_canonical_wordbench_not_full_suite(tmp_path):
+def test_selective_quick_uses_wordbench_compilation_adapter_not_full_suite(tmp_path):
     rgl, project = sample(tmp_path)
     inv = inventory(rgl)
     seen = []
@@ -43,8 +46,9 @@ def test_selective_quick_uses_canonical_wordbench_not_full_suite(tmp_path):
         batch = wb.run_batch(inventory=inv, rgl_root=rgl, wordbench_root=project,
                              output_dir=tmp_path/'out', codes=['Eng'], timeout=90)
     assert len(seen) == 1
-    assert seen[0][1:6] == ['-m','gf_wordbench','validate','--mode','quick']
-    assert '--target' in seen[0] and any('SyntaxEng.gf' in x for x in seen[0])
+    assert seen[0][1] == '-u'
+    assert any(x.endswith('wordbench_quick_probe.py') for x in seen[0])
+    assert '--source' in seen[0] and any('SyntaxEng.gf' in x for x in seen[0])
     assert batch['results'][0]['status'] == 'ok'
     assert batch['results'][0]['source_module'].endswith('SyntaxEng.gf')
     assert len(batch['results']) == 1

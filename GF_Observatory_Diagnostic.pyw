@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
-"""GF Observatory — diagnostic graphique autonome pour Windows / Python 3.10+.
+"""GF Observatory — diagnostic graphique intégré pour Windows / Python 3.10+.
 
 Inventaire RGL et agrégation des preuves WordBench; sources en lecture seule.
 La validation WordBench est une action explicite, bornée et annulable entre langues.
 """
 from __future__ import annotations
+
+from tools.gf_locator import resolve_gf_executable, default_gf_executable, missing_gf_message
+from tools.windows_process import background_process_options
 
 # --- Embedded inventory parser from tools/rgl_inventory.py ---
 """Discover language candidates in an actual GF RGL checkout (read-only)."""
@@ -342,6 +345,23 @@ def language_source(rgl_root: Path, language: dict) -> tuple[Path | None, str]:
     return None, "no_public_module"
 
 
+
+def light_source(rgl_root: Path, language: dict) -> tuple[Path | None, str]:
+    """Small, low-cost *structural* GF probe; not a full Grammar/Syntax test.
+
+    Never silently substitute a full grammar: a heavy compile must be requested
+    with quick, and absence of Cat is an untested result, not a failure.
+    """
+    root = rgl_root.resolve()
+    for relative in language.get('modules', {}).get('Cat', []):
+        path = (root / relative).resolve()
+        if (path.is_relative_to(root) and path.is_file() and not path.is_symlink()
+                and not any(part in {'api', 'prelude', 'TEMPLATE', 'abstract_ext'}
+                            for part in path.relative_to(root).parts)):
+            return path, 'Cat'
+    return None, 'light_cat_module_absent'
+
+
 def python_console() -> Path:
     exe = Path(sys.executable)
     if os.name == "nt" and exe.name.lower() == "pythonw.exe":
@@ -378,12 +398,18 @@ def make_command(
     common = ["--language-path", str(source.parent), "--rgl-root", str(rgl_root), "--output-root", str(output_dir / "wb_artifacts")]
     if gf_executable is not None:
         common.extend(["--gf-executable", str(gf_executable)])
-    if mode == "quick":
-        # Canonical WB CLI uses --gf-exe and --out-root, not practical CLI spellings.
-        cmd = [exe, "-m", "gf_wordbench", "validate", "--mode", "quick",
-               "--language-path", str(source.parent), "--target", str(source),
-               "--rgl-root", str(rgl_root), "--out-root", str(output_dir / "wb_artifacts"),
-               "--compile-timeout", "70", "--no-compare-previous"]
+    if mode in ("quick", "light"):
+        # The supplied WordBench CLI currently routes its public ValidateCommandRequest
+        # to a provider requiring RunConfig (GF-WB-CONFIG-914). Rather than change
+        # WordBench, invoke its real GF command builder through an isolated probe.
+        probe_candidates = (Path(__file__).resolve().parent / "wordbench_quick_probe.py",
+                            Path(__file__).resolve().parent / "tools" / "wordbench_quick_probe.py")
+        probe = next((p for p in probe_candidates if p.is_file()), None)
+        if probe is None:
+            raise ValueError("Composant Observatory tools/wordbench_quick_probe.py absent; réinstalle le dépôt complet")
+        cmd = [exe, "-u", str(probe), "--source", str(source),
+               "--rgl-root", str(rgl_root),
+               "--out-root", str(output_dir / "wb_artifacts" / mode / code)]
         if gf_executable is not None:
             cmd.extend(["--gf-exe", str(gf_executable)])
         return cmd
@@ -404,13 +430,51 @@ def make_command(
     raise ValueError("Mode WordBench invalide (quick ou practical)")
 
 
+def classify_quick_result(status: str, exit_code: int | None, output: str) -> tuple[str, str | None]:
+    """Separate compilation failures from interruption, timeout and setup errors.
+
+    A quick run does not measure semantic readiness. Windows NTSTATUS values
+    may be reported as unsigned 32-bit exit codes by Python on Windows.
+    """
+    if status == "ok":
+        return status, None
+    if status == "timeout":
+        return status, "wordbench_timeout"
+    if status == "cancelled":
+        return status, "cancelled"
+    if status != "error":
+        return status, None
+    if (exit_code is not None and (exit_code & 0xFFFFFFFF) == 0xC000013A) or (
+        exit_code == 23 and "0xC000013A" in output
+    ):
+        return "interrupted", "windows_control_c_exit"
+    if "Compilateur GF introuvable" in output or "Le compilateur GF ne démarre pas" in output:
+        return status, "gf_compiler_missing_or_unavailable"
+    if "Composant WordBench de compilation indisponible" in output:
+        return status, "wordbench_compile_component_unavailable"
+    if "artefact attendu est absent" in output:
+        return status, "gf_artifact_missing"
+    if "The validation application requires a resolved RunConfig" in output:
+        return status, "wordbench_runconfig_unresolved"
+    if " does not exist." in output and "File " in output:
+        return status, "gf_dependency_missing"
+    if "Internal error" in output or "CallStack (from HasCallStack)" in output:
+        return status, "gf_compiler_internal_error"
+    if "constant not found:" in output:
+        return status, "gf_api_symbol_missing"
+    if "unknown label" in output:
+        return status, "gf_typecheck_error"
+    return status, "gf_compilation_failed_or_wordbench_error"
+
+
 def _stop_process(proc: subprocess.Popen) -> None:
     if proc.poll() is not None:
         return
     if os.name == "nt":
         try:
             subprocess.run(["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                           capture_output=True, timeout=8, check=False)
+                           capture_output=True, timeout=8, check=False,
+                           **background_process_options())
         except (OSError, subprocess.TimeoutExpired):
             proc.kill()
     else:
@@ -425,10 +489,7 @@ def _execute(cmd: list[str], env: dict[str, str], timeout: int, stop: threading.
         return "cancelled", None, "Annulation demandée"
     kwargs = {"stdout": subprocess.PIPE, "stderr": subprocess.STDOUT, "text": True,
               "encoding": "utf-8", "errors": "replace", "env": env}
-    if os.name == "nt":
-        kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
-    else:
-        kwargs["start_new_session"] = True
+    kwargs.update(background_process_options(new_process_group=True))
     proc = subprocess.Popen(cmd, **kwargs)
     # communicate(timeout) is bounded; caller is responsible for log truncation.
     # Cancellation between individual runs is supported; current run finishes or times out.
@@ -456,7 +517,7 @@ def run_batch(
     """Execute only the explicit set, sequentially; never guess missing golden fixtures."""
     if not 5 <= timeout <= 3600:
         raise ValueError("Le délai doit être entre 5 et 3600 secondes")
-    if mode not in {"quick", "practical"}:
+    if mode not in {"quick", "light", "practical"}:
         raise ValueError("Mode invalide")
     rgl_root, wordbench_root, output_dir = (Path(x).resolve() for x in (rgl_root, wordbench_root, output_dir))
     resolved_wb = resolve_wordbench_root(wordbench_root)
@@ -468,6 +529,12 @@ def run_batch(
     env = wordbench_environment(wordbench_root)
     if mode == "practical" and not (wordbench_root / "src/gf_wordbench/practical/cli.py").is_file():
         raise ValueError("Extension gf_wordbench.practical absente du WordBench installé")
+    # One preflight before the entire batch, never 67 subprocesses failing the
+    # same missing-compiler check. An explicit invalid path remains an error.
+    resolved_gf = resolve_gf_executable(gf_executable, workspace=rgl_root.parent)
+    if resolved_gf is None:
+        raise ValueError(missing_gf_message(rgl_root.parent))
+    gf_executable = resolved_gf
     if not isinstance(inventory.get("languages"), list):
         raise ValueError("Inventaire incorrect")
     by_code = {x["code"]: x for x in inventory["languages"]}
@@ -482,11 +549,15 @@ def run_batch(
         if stop.is_set():
             break
         lang = by_code[code]
-        source, role = language_source(rgl_root, lang)
+        source, role = (light_source(rgl_root, lang) if mode == "light" else language_source(rgl_root, lang))
         record: dict = {"code": code, "mode": mode, "source_module": str(source) if source else None,
                         "status": "not_tested", "exit_code": None, "reason": None, "log_path": None,
+                        "timeout_seconds": timeout, "duration_seconds": None, "probe_scope": "Cat module only" if mode == "light" else mode,
                         "wordbench_language_key": wordbench_language_key(source, rgl_root) if source else None}
         if source is None:
+            # A language without Cat cannot run the Cat-only probe. This is a
+            # scope limitation, never a linguistic failure (e.g. Kal).
+            record["status"] = "not_applicable" if mode == "light" and role == "light_cat_module_absent" else "not_tested"
             record["reason"] = role
         else:
             try:
@@ -495,18 +566,15 @@ def run_batch(
                                    practical_profile=practical_profile,
                                    validation_profiles_root=validation_profiles_root,
                                    gf_executable=gf_executable, python_executable=python_executable)
+                started = __import__('time').monotonic()
                 status, exit_code, captured = _execute(cmd, env, timeout, stop)
-                record["status"] = status
+                record['duration_seconds'] = round(__import__('time').monotonic() - started, 2)
+                if status == 'timeout':
+                    captured += (f"\n[Observatory] Limite de {timeout} secondes atteinte sur {source.name}. "
+                                 "Ce délai ne prouve pas une erreur grammaticale. "
+                                 "Pour un diagnostic moins coûteux, choisir le mode light (Cat uniquement).\n")
+                record["status"], record["reason"] = classify_quick_result(status, exit_code, captured)
                 record["exit_code"] = exit_code
-                if status == "error":
-                    if "The validation application requires a resolved RunConfig" in captured:
-                        record["reason"] = "wordbench_runconfig_unresolved"
-                    else:
-                        record["reason"] = "wordbench_exit_nonzero"
-                elif status == "timeout":
-                    record["reason"] = "wordbench_timeout"
-                else:
-                    record["reason"] = None
                 log_file = log_dir / f"{code}_{mode}.log"
                 # Keep capped logs, and do not persist executable command or environment secrets.
                 log_file.write_text(captured[-600_000:], encoding="utf-8")
@@ -532,11 +600,13 @@ def run_batch(
               "mode": mode, "generated_at": datetime.now(timezone.utc).isoformat(),
               "rgl_root": str(rgl_root), "wordbench_root": str(wordbench_root),
               "requested": wanted, "completed": len(records), "cancelled": stop.is_set(),
-              "results": records,
+              "batch_results": records, "results": records,
               "note": "quick = module compile/check only, never evidence of semantic readiness; practical requires verified WordBench gold scenarios"}
     output_dir.mkdir(parents=True, exist_ok=True)
-    path = output_dir / ("wordbench_quick_results.json" if mode == "quick" else "wordbench_practical_executions.json")
-    if mode == "quick" and path.is_file():
+    path = output_dir / {"quick": "wordbench_quick_results.json",
+                         "light": "wordbench_light_results.json",
+                         "practical": "wordbench_practical_executions.json"}[mode]
+    if mode in ("quick", "light") and path.is_file():
         try:
             previous = json.loads(path.read_text(encoding="utf-8"))
             if (previous.get("schema_id") == result["schema_id"] and previous.get("rgl_root") == str(rgl_root)):
@@ -557,7 +627,7 @@ def main(argv=None):
     p.add_argument("--rgl-root", type=Path, required=True)
     p.add_argument("--wordbench-root", type=Path, required=True)
     p.add_argument("--output-dir", type=Path, required=True)
-    p.add_argument("--mode", choices=("quick", "practical"), default="quick")
+    p.add_argument("--mode", choices=("light", "quick", "practical"), default="quick")
     p.add_argument("--codes", nargs="+", required=True)
     p.add_argument("--timeout", type=int, default=90)
     p.add_argument("--practical-profile", type=Path)
@@ -585,11 +655,15 @@ import shutil
 import sys
 import threading
 import traceback
-from tkinter import Tk, StringVar, Text, END, filedialog, messagebox, ttk
+from tkinter import Tk, StringVar, Text, END, filedialog, messagebox, ttk, Frame, Label
 from typing import Any
+from tools.batch_logs import load_batch_log_rows, read_log, format_batch_report, summarize_batch
+from tools.ui_theme import PALETTE, apply_theme
+from tools.ui_state import FIELDS as UI_PREFERENCE_FIELDS, read_ui_preferences, write_ui_preferences
 
-APP_VERSION = "0.3.3-wordbench-diagnostics"
-REPOSITORIES = ("GF_Observatory", "GF_Wordbench", "ars-magna-lulli", "GF_RGL_AI_Compendium")
+APP_VERSION = "0.4.2-defluens-naming"
+REPOSITORIES = ("GF_Observatory", "GF_Wordbench", "ars-magna-defluens", "GF_RGL_AI_Compendium")
+REPOSITORY_ALIASES = {"ars-magna-defluens": ("ars-magna-defluens", "ars-magna-lulli")}
 
 
 def find_rgl_root(workspace: Path) -> Path | None:
@@ -616,7 +690,9 @@ def collect_environment(workspace: Path, root: Path) -> dict[str, Any]:
                        "version": None, "version_note": "Non exécuté (diagnostic sans processus externe)"}
     repos = {}
     for name in REPOSITORIES:
-        folder = workspace / name
+        names = REPOSITORY_ALIASES.get(name, (name,))
+        folder = next((workspace / candidate for candidate in names
+                       if (workspace / candidate).is_dir()), workspace / names[0])
         repos[name] = {"exists": folder.is_dir(), "path": str(folder)}
     return {"schema_id": "gf-practical.environment-diagnostic", "schema_version": "1.0",
             "app_version": APP_VERSION,
@@ -696,10 +772,52 @@ def run_diagnostic(
                 by_code = {r['code']: r for r in quick.get('results', []) if isinstance(r, dict) and 'code' in r}
                 for row in cat['languages']:
                     record = by_code.get(row['code'])
-                    row['wordbench_quick'] = record.get('status', 'not_tested') if record else 'not_tested'
+                    old_status = record.get('status', 'not_tested') if record else 'not_tested'
+                    old_exit = record.get('exit_code') if record else None
+                    old_reason = record.get('reason') if record else None
+                    captured = ''
+                    # Legacy quick-result reports used generic wordbench_exit_nonzero.
+                    # Recover the precise error from a bounded local Observatory log,
+                    # never read arbitrary paths supplied by an imported record.
+                    if record and old_reason in ('wordbench_exit_nonzero', 'gf_compilation_failed_or_wordbench_error'):
+                        try:
+                            log_file = Path(record.get('log_path') or '')
+                            log_dir = (output_dir / 'wordbench_logs').resolve()
+                            if (log_file.is_file() and not log_file.is_symlink()
+                                    and log_file.resolve().is_relative_to(log_dir)
+                                    and log_file.stat().st_size <= 1_000_000):
+                                captured = log_file.read_text(encoding='utf-8', errors='replace')
+                        except (OSError, ValueError):
+                            pass
+                    normalized, reason = classify_quick_result(old_status, old_exit, captured)
+                    row['wordbench_quick'] = normalized
                     row['wordbench_quick_log'] = record.get('log_path') if record else None
-                    row['wordbench_quick_reason'] = record.get('reason') if record else None
-                    row['wordbench_quick_exit_code'] = record.get('exit_code') if record else None
+                    row['wordbench_quick_reason'] = (reason if normalized == 'interrupted' or old_reason in ('wordbench_exit_nonzero', 'gf_compilation_failed_or_wordbench_error') else old_reason) or old_reason
+                    row['wordbench_quick_exit_code'] = old_exit
+        except (OSError, ValueError, TypeError):
+            pass
+    # Lightweight Cat compilation is a separate, weaker signal. Never promote
+    # it to quick compilation or semantic readiness.
+    light_file = output_dir / 'wordbench_light_results.json'
+    if light_file.is_file():
+        try:
+            light = _json(light_file)
+            if (light.get('schema_id') == 'gf-observatory.wordbench-execution'
+                    and light.get('mode') == 'light'
+                    and Path(light.get('rgl_root', '')).resolve() == rgl_root.resolve()):
+                by_code_light = {r['code']: r for r in light.get('results', [])
+                                 if isinstance(r, dict) and 'code' in r}
+                for row in cat['languages']:
+                    record = by_code_light.get(row['code'])
+                    if record:
+                        light_status = record.get('status', 'not_tested')
+                        if light_status == 'not_tested' and record.get('reason') == 'light_cat_module_absent':
+                            light_status = 'not_applicable'  # Historical reports from v0.3.9
+                        row['wordbench_light'] = light_status
+                        row['wordbench_light_log'] = record.get('log_path')
+                        row['wordbench_light_reason'] = record.get('reason')
+                        row['wordbench_light_module'] = record.get('source_module')
+                        row['wordbench_light_duration_seconds'] = record.get('duration_seconds')
         except (OSError, ValueError, TypeError):
             pass
     write_catalog(cat, output_dir / 'practical_catalog.json', output_dir / 'practical_catalog.csv')
@@ -726,14 +844,19 @@ def run_diagnostic(
 class DiagnosticWindow(Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("GF Observatory — Inventaire et diagnostic pratique")
-        self.geometry("1250x830")
-        self.minsize(950, 600)
+        self.title("GF Observatory  |  Mécanismes Abstraits")
+        self.geometry("1290x850")
+        self.minsize(960, 680)
+        apply_theme(self)
         self._events: queue.Queue = queue.Queue()
         self._running = False
         self._rows: dict[str, dict] = {}
         self._result: dict | None = None
         self._last_error: str = ""
+        self._last_failed_code: str | None = None
+        self._batch_log_rows: list[dict] = []
+        self._log_records: dict[str, dict] = {}
+        self.log_filter = StringVar(value="Tous")
         default_ws = Path(r"C:\mycode\Grammatical-Framework") if os.name == 'nt' else Path.home()
         self.workspace = StringVar(value=str(default_ws))
         suggestion = find_rgl_root(default_ws)
@@ -741,109 +864,431 @@ class DiagnosticWindow(Tk):
         self.reports_root = StringVar(value="")
         self.wordbench_root = StringVar(value=str(resolve_wordbench_root(default_ws / 'GF_Wordbench', default_ws) or (default_ws / 'GF_Wordbench')))
         self.validation_profiles_root = StringVar(value="")
-        self.wb_mode = StringVar(value="quick")
+        self.gf_executable = StringVar(value=str(default_gf_executable(default_ws) or ""))
+        self.wb_mode = StringVar(value="light")
+        self.wb_timeout = StringVar(value="60")
         self._cancel_wordbench = threading.Event()
         self.profile_path = StringVar(value="")
         self.identity_path = StringVar(value="")
         self.output_dir = StringVar(value=str(Path.home() / "GF_Observatory_Diagnostic"))
         self.filter_text = StringVar(value="")
+        self.language_filter = StringVar(value="Toutes les langues")
+        self.selection_heading = StringVar(value="Sélectionne une langue pour voir son diagnostic")
+        self.selection_hint = StringVar(value="Les compilations et la couverture pratique sont deux vérifications distinctes.")
+        self.metric_languages = StringVar(value="—")
+        self.metric_light = StringVar(value="—")
+        self.metric_quick = StringVar(value="—")
+        self.metric_attention = StringVar(value="—")
+        self._settings_open = False
+        self._sort_language_column = "code"
+        self._sort_language_reverse = False
         self.state_text = StringVar(value="Prêt à inventorier, aucune compilation lancée.")
         self.count_text = StringVar(value="Aucun résultat")
+        self._ui_settings_path = Path.home() / '.gf_observatory_ui.json'
+        for key, value in read_ui_preferences(self._ui_settings_path).items():
+            getattr(self, key).set(value)
         self._make_ui()
+        self._reload_batch_logs()  # Historical reports are read only; never start GF here.
+        self.protocol('WM_DELETE_WINDOW', self._close_ui)
         self.after(120, self._poll)
 
-    def _make_ui(self) -> None:
-        outer = ttk.Frame(self, padding=12)
-        outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="GF Observatory — Diagnostic RGL / ChatSystem", font=("Segoe UI", 17, "bold")).pack(anchor="w")
-        ttk.Label(outer, text="Lecture seule des sources. Inventaire rapide des modules, puis résultats WordBench si disponibles.").pack(anchor="w", pady=(0, 10))
-        params = ttk.LabelFrame(outer, text="Sources et sortie", padding=8)
-        params.pack(fill="x")
-        self._path_row(params, 0, "Workspace", self.workspace, True)
-        self._path_row(params, 1, "RGL / GF lib", self.rgl_root, True)
-        self._path_row(params, 2, "Rapports WordBench (facultatif)", self.reports_root, True)
-        self._path_row(params, 3, "Profil pratique JSON (facultatif)", self.profile_path, False)
-        self._path_row(params, 4, "Correspondance des codes JSON (facultatif)", self.identity_path, False)
-        self._path_row(params, 5, "Dossier de sortie", self.output_dir, True)
-        self._path_row(params, 6, "Dépôt GF WordBench", self.wordbench_root, True)
-        self._path_row(params, 7, "Profils WordBench par langue (si tests pratiques)", self.validation_profiles_root, True)
-        params.columnconfigure(1, weight=1)
-        buttons = ttk.Frame(outer)
-        buttons.pack(fill="x", pady=(9, 0))
-        self.run_button = ttk.Button(buttons, text="Scanner les langues", command=self._start)
-        self.run_button.pack(side="left")
-        ttk.Button(buttons, text="Détecter la RGL", command=self._auto).pack(side="left", padx=(7, 0))
-        ttk.Button(buttons, text="Détecter WordBench", command=self._auto_wordbench).pack(side="left", padx=(7, 0))
-        ttk.Button(buttons, text="Voir les fichiers de sortie", command=self._show_dir).pack(side="left", padx=(7, 0))
-        ttk.Label(buttons, textvariable=self.count_text, font=("Segoe UI", 10, "bold")).pack(side="right")
-        wb_buttons = ttk.Frame(outer)
-        wb_buttons.pack(fill="x", pady=(5, 10))
-        ttk.Label(wb_buttons, text="Validation WordBench : ").pack(side="left")
-        ttk.Combobox(wb_buttons, textvariable=self.wb_mode, values=("quick", "practical"), state="readonly", width=11).pack(side="left")
-        self.wb_selected_button = ttk.Button(wb_buttons, text="Tester sélection", command=lambda: self._start_wordbench(False))
-        self.wb_selected_button.pack(side="left", padx=(7, 0))
-        self.wb_all_button = ttk.Button(wb_buttons, text="Tester toutes", command=lambda: self._start_wordbench(True))
-        self.wb_all_button.pack(side="left", padx=(7, 0))
-        self.wb_stop_button = ttk.Button(wb_buttons, text="Arrêter après cette langue", command=self._stop_wordbench, state="disabled")
-        self.wb_stop_button.pack(side="left", padx=(7, 0))
-        ttk.Button(wb_buttons, text="Voir journal WB", command=self._show_wordbench_log).pack(side="left", padx=(7, 0))
-        self.progress = ttk.Progressbar(outer, mode="indeterminate")
-        self.progress.pack(fill="x")
-        ttk.Label(outer, textvariable=self.state_text).pack(anchor="w", pady=5)
-        tabs = ttk.Notebook(outer)
-        self.tabs = tabs
-        tabs.pack(fill="both", expand=True)
-        tab1 = ttk.Frame(tabs, padding=8)
-        tab2 = ttk.Frame(tabs, padding=8)
-        tabs.add(tab1, text="Langues")
-        tabs.add(tab2, text="Diagnostic / explications")
-        self.diagnostic_tab = tab2
-        toolbar = ttk.Frame(tab1)
-        toolbar.pack(fill="x", pady=(0, 5))
-        ttk.Label(toolbar, text="Filtrer :").pack(side="left")
-        search = ttk.Entry(toolbar, textvariable=self.filter_text)
-        search.pack(side="left", fill="x", expand=True, padx=8)
-        self.filter_text.trace_add("write", lambda *_: self._render_rows())
-        columns = ("code", "structure", "wordbench", "practical", "encyclopedic", "procedural", "failed", "unverified")
-        panel = ttk.Frame(tab1)
-        panel.pack(fill="both", expand=True)
-        self.tree = ttk.Treeview(panel, columns=columns, show="headings", height=12)
-        headers = (("code", "Langue"), ("structure", "Structure"), ("wordbench", "WB rapide"), ("practical", "Usage pratique"),
-                   ("encyclopedic", "Encyclopédie"), ("procedural", "Instructions"),
-                   ("failed", "Échecs"), ("unverified", "Non testées"))
-        for field, text in headers:
-            self.tree.heading(field, text=text)
-            self.tree.column(field, width=110 if field not in ("code", "structure") else 95,
-                             minwidth=75, anchor="w")
-        self.tree.column("code", width=85, stretch=False)
-        self.tree.column("failed", width=75, stretch=False)
-        self.tree.column("unverified", width=95, stretch=False)
-        scroll = ttk.Scrollbar(panel, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=scroll.set)
-        self.tree.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
-        self.tree.bind("<<TreeviewSelect>>", self._show_selection)
-        ttk.Label(tab1, text="Détails de la langue sélectionnée :").pack(anchor="w", pady=(7, 2))
-        self.detail = Text(tab1, height=9, wrap="word", font=("Consolas", 10))
-        self.detail.pack(fill="both", expand=False)
-        self.detail.configure(state="disabled")
-        self.explain = Text(tab2, wrap="word", font=("Consolas", 10))
-        self.explain.pack(fill="both", expand=True)
-        self._set_text(self.explain, "Aucune analyse encore réalisée.\n\n"
-                       "1. Sélectionne le répertoire de ta RGL (la racine qui contient src/).\n"
-                       "2. Si tu possèdes des sorties de WordBench, choisis leur dossier.\n"
-                       "3. Lance 'Scanner les langues'.\n\n"
-                       "Une langue n'est prête que si toutes les fonctions obligatoires ont des preuves vérifiables.\n"
-                       "Sans résultats de tests linguistiques, la langue est 'non vérifiée'.\n"
-                       "L'inventaire est sans exécution. Le bouton Tester lance explicitement WordBench.\n"
-                       "Le mode quick vérifie UN module ciblé ; ne valide aucun scénario sémantique.\n"
-                       "Le mode practical exige des profils .gfs et résultats gold propres à la langue.")
+    def _close_ui(self) -> None:
+        # A scan or compiler might still be running: do not leave an unknown
+        # background process behind by destroying the UI mid-operation.
+        if self._running:
+            messagebox.showinfo('Test en cours',
+                'Un diagnostic est encore en cours. Clique sur « Arrêter après la langue » '
+                'pour une validation, puis ferme Observatory lorsque le travail est terminé.')
+            return
+        values = {name: getattr(self, name).get() for name in UI_PREFERENCE_FIELDS}
+        try:
+            write_ui_preferences(self._ui_settings_path, values)
+        except OSError:
+            pass  # GUI must still close if the home directory is read-only.
+        self.destroy()
 
-    def _path_row(self, parent, idx: int, label: str, variable: StringVar, directory: bool) -> None:
+    def _metric_card(self, parent, title: str, variable: StringVar, accent: str) -> None:
+        """Simple typographic stats; unknown data stays unknown."""
+        item = Frame(parent, bg=PALETTE['white'], highlightbackground=PALETTE['border'], highlightthickness=1)
+        item.pack(side='left', fill='both', expand=True, padx=(0, 10))
+        Frame(item, bg=accent, height=4).pack(fill='x')
+        Label(item, text=title.upper(), bg=PALETTE['white'], fg=PALETTE['muted'],
+              font=('Segoe UI Semibold', 9), anchor='w').pack(fill='x', padx=15, pady=(10, 0))
+        Label(item, textvariable=variable, bg=PALETTE['white'], fg=PALETTE['ink'],
+              font=('Segoe UI Semibold', 24), anchor='w').pack(fill='x', padx=15, pady=(0, 8))
+
+    def _make_ui(self) -> None:
+        """Primary flow: find language → run verification → inspect proof.
+
+        Sources/advanced paths are collapsible, not the application's home page.
+        """
+        outer = ttk.Frame(self, padding=(20, 16, 20, 10))
+        outer.pack(fill='both', expand=True)
+
+        hero = ttk.Frame(outer)
+        hero.pack(fill='x', pady=(0, 12))
+        heading = ttk.Frame(hero)
+        heading.pack(side='left', fill='x', expand=True)
+        ttk.Label(heading, text='MÉCANISMES ABSTRAITS   /   GRAMMATICAL FRAMEWORK', style='Eyebrow.TLabel').pack(anchor='w')
+        ttk.Label(heading, text='GF Observatory', style='Title.TLabel').pack(anchor='w', pady=(1, 1))
+        ttk.Label(heading, text='Une intention. Plusieurs langues. Des preuves vérifiables.', style='Subtitle.TLabel').pack(anchor='w')
+        ttk.Label(heading, text='Écosystème : GF WordBench  ·  Ars Magna Defluens (orchestration cible)',
+                  style='Small.TLabel').pack(anchor='w', pady=(3, 0))
+        actions = ttk.Frame(hero)
+        actions.pack(side='right', anchor='ne')
+        self.run_button = ttk.Button(actions, text='Actualiser les langues', style='Accent.TButton', command=self._start)
+        self.run_button.pack(side='right', padx=(8, 0), pady=(11, 0))
+        self.settings_button = ttk.Button(actions, text='⚙  Paramètres', style='Quiet.TButton', command=self._toggle_settings)
+        self.settings_button.pack(side='right', pady=(13, 0))
+
+        stats = ttk.Frame(outer)
+        stats.pack(fill='x', pady=(0, 12))
+        self._metric_card(stats, 'Langues détectées', self.metric_languages, PALETTE['navy'])
+        self._metric_card(stats, 'Tests light OK', self.metric_light, PALETTE['sage'])
+        self._metric_card(stats, 'Tests quick OK', self.metric_quick, PALETTE['sage'])
+        self._metric_card(stats, 'À examiner (quick)', self.metric_attention, PALETTE['vermilion'])
+
+        self.settings_frame = ttk.Frame(outer, padding=12, style='Card.TFrame')
+        ttk.Label(self.settings_frame, text='CONFIGURATION DU WORKSPACE', style='Section.TLabel').pack(anchor='w', pady=(0, 2))
+        ttk.Label(self.settings_frame, text='Les chemins sont conservés comme réglages techniques ; ils ne bloquent pas la consultation des anciens journaux.',
+                  style='Small.TLabel').pack(anchor='w', pady=(0, 7))
+        params = ttk.Frame(self.settings_frame)
+        params.pack(fill='x')
+        self._path_row(params, 0, 'Workspace', self.workspace, True)
+        self._path_row(params, 1, 'RGL / GF lib', self.rgl_root, True)
+        self._path_row(params, 2, 'Rapports WordBench (facultatif)', self.reports_root, True)
+        self._path_row(params, 3, 'Profil pratique JSON (facultatif)', self.profile_path, False)
+        self._path_row(params, 4, 'Correspondance des codes JSON', self.identity_path, False)
+        self._path_row(params, 5, 'Dossier des résultats', self.output_dir, True)
+        self._path_row(params, 6, 'Dépôt WordBench', self.wordbench_root, True)
+        self._path_row(params, 7, 'Profils de scénarios pratiques', self.validation_profiles_root, True)
+        self._path_row(params, 8, 'Compilateur GF (gf.exe)', self.gf_executable, False, executable=True)
+        params.columnconfigure(1, weight=1)
+        detect = ttk.Frame(self.settings_frame)
+        detect.pack(fill='x', pady=(6, 0))
+        ttk.Button(detect, text='Détecter RGL', command=self._auto).pack(side='left', padx=(0, 6))
+        ttk.Button(detect, text='Détecter WordBench', command=self._auto_wordbench).pack(side='left', padx=(0, 6))
+        ttk.Button(detect, text='Détecter GF', command=self._auto_gf).pack(side='left', padx=(0, 6))
+        ttk.Button(detect, text='Dossier de résultats', command=self._show_dir).pack(side='left')
+
+        self.workflow = ttk.Frame(outer)
+        self.workflow.pack(fill='x', pady=(0, 10))
+        top = ttk.Frame(self.workflow)
+        top.pack(fill='x', pady=(0, 6))
+        ttk.Label(top, text='VALIDER DES LANGUES', style='Eyebrow.TLabel').pack(side='left')
+        ttk.Label(top, text='Le mode quick vérifie une compilation, pas les 15 capacités génération pratique.',
+                  style='Small.TLabel').pack(side='right')
+        controls = ttk.Frame(self.workflow)
+        controls.pack(fill='x')
+        ttk.Label(controls, text='Mode').pack(side='left', padx=(0, 6))
+        ttk.Combobox(controls, textvariable=self.wb_mode,
+                     values=('light', 'quick', 'practical'), state='readonly', width=11).pack(side='left')
+        ttk.Label(controls, text='Délai/langue (s)').pack(side='left', padx=(13, 5))
+        ttk.Entry(controls, textvariable=self.wb_timeout, width=6).pack(side='left')
+        self.wb_selected_button = ttk.Button(controls, text='Tester sélection', style='Primary.TButton',
+                                             command=lambda: self._start_wordbench(False))
+        self.wb_selected_button.pack(side='left', padx=(14, 5))
+        self.wb_all_button = ttk.Button(controls, text='Tester toutes', command=lambda: self._start_wordbench(True))
+        self.wb_all_button.pack(side='left', padx=(0, 5))
+        more_controls = ttk.Frame(self.workflow)
+        more_controls.pack(fill='x', pady=(5, 0))
+        self.wb_retry_button = ttk.Button(more_controls, text='Retester échecs / délais',
+                                          command=lambda: self._start_wordbench(False, retry_failed=True))
+        self.wb_retry_button.pack(side='left', padx=(0, 5))
+        ttk.Label(more_controls, text='Les résultats précédents sont conservés.',
+                  style='Small.TLabel').pack(side='left', padx=(9, 0))
+        self.wb_stop_button = ttk.Button(more_controls, text='Arrêter après la langue',
+                                         command=self._stop_wordbench, state='disabled')
+        self.wb_stop_button.pack(side='right')
+
+        self.progress = ttk.Progressbar(outer, mode='indeterminate')
+        status_line = ttk.Frame(outer)
+        self._status_line = status_line
+        status_line.pack(fill='x', pady=(0, 3))
+        ttk.Label(status_line, text='●', foreground=PALETTE['sage']).pack(side='left', padx=(0, 5))
+        ttk.Label(status_line, textvariable=self.state_text, style='Status.TLabel').pack(side='left', fill='x', expand=True)
+        ttk.Label(status_line, text='SOURCE : journaux locaux / WordBench', style='Small.TLabel').pack(side='right')
+
+        self.tabs = ttk.Notebook(outer)
+        self.tabs.pack(fill='both', expand=True)
+        tab1 = ttk.Frame(self.tabs, padding=(10, 12, 10, 10))
+        tab3 = ttk.Frame(self.tabs, padding=(10, 12, 10, 10))
+        tab2 = ttk.Frame(self.tabs, padding=(10, 12, 10, 10))
+        self.tabs.add(tab1, text='01   Langues')
+        self.tabs.add(tab3, text='02   Journaux de lot')
+        self.tabs.add(tab2, text='03   Diagnostic technique')
+        self.language_tab = tab1
+        self.diagnostic_tab = tab2
+        self.batch_logs_tab = tab3
+
+        # Language list + resizable evidence panel are a single workspace.
+        toolbar = ttk.Frame(tab1)
+        toolbar.pack(fill='x', pady=(0, 10))
+        ttk.Label(toolbar, text='Rechercher', style='Section.TLabel').pack(side='left', padx=(0, 9))
+        search = ttk.Entry(toolbar, textvariable=self.filter_text, width=27)
+        search.pack(side='left', fill='x', expand=True, padx=(0, 12))
+        ttk.Label(toolbar, text='Afficher').pack(side='left', padx=(0, 7))
+        filt = ttk.Combobox(toolbar, textvariable=self.language_filter, state='readonly', width=23,
+                            values=('Toutes les langues', 'À examiner (quick)', 'Quick réussi',
+                                    'Light réussi', 'Pratique non vérifiée'))
+        filt.pack(side='left')
+        filt.bind('<<ComboboxSelected>>', lambda _e: self._render_rows())
+        self.filter_text.trace_add('write', lambda *_: self._render_rows())
+        ttk.Button(toolbar, text='Voir le journal', command=self._open_selected_log, style='Quiet.TButton').pack(side='left', padx=(10, 0))
+
+        split = ttk.Panedwindow(tab1, orient='vertical')
+        split.pack(fill='both', expand=True)
+        panel = ttk.Frame(split)
+        detail_panel = ttk.Frame(split)
+        split.add(panel, weight=5)
+        split.add(detail_panel, weight=2)
+        columns = ('code', 'project', 'structure', 'light', 'wordbench', 'practical', 'verified')
+        self.tree = ttk.Treeview(panel, columns=columns, show='headings', height=12, selectmode='extended')
+        headers = (('code', 'LANGUE', 82), ('project', 'PROJET', 177),
+                   ('structure', 'STRUCTURE', 132), ('light', 'LIGHT', 120),
+                   ('wordbench', 'QUICK', 120), ('practical', 'PRATIQUE', 155),
+                   ('verified', 'COUVERTURE', 142))
+        for key, title, width in headers:
+            self.tree.heading(key, text=title, command=lambda k=key: self._sort_languages(k))
+            self.tree.column(key, width=width, minwidth=75, anchor='w', stretch=key != 'code')
+        self.tree.tag_configure('even', background=PALETTE['white'])
+        self.tree.tag_configure('odd', background=PALETTE['row_alt'])
+        self.tree.tag_configure('error', background=PALETTE['error_pale'])
+        self.tree.tag_configure('pending', background=PALETTE['ochre_pale'])
+        scroll = ttk.Scrollbar(panel, orient='vertical', command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        self.tree.bind('<<TreeviewSelect>>', self._show_selection)
+        self.tree.bind('<Double-Button-1>', self._open_selected_log)
+
+        detail_heading = ttk.Frame(detail_panel)
+        detail_heading.pack(fill='x', pady=(6, 5))
+        ttk.Label(detail_heading, textvariable=self.selection_heading, style='Section.TLabel').pack(side='left')
+        ttk.Button(detail_heading, text='Journal de cette langue', style='Quiet.TButton',
+                   command=self._open_selected_log).pack(side='right')
+        ttk.Label(detail_panel, textvariable=self.selection_hint, style='Small.TLabel').pack(anchor='w', pady=(0, 5))
+        detail_text_frame = ttk.Frame(detail_panel)
+        detail_text_frame.pack(fill='both', expand=True)
+        self.detail = Text(detail_text_frame, wrap='word', height=8, font=('Consolas', 10),
+                           bg=PALETTE['white'], fg=PALETTE['ink'], borderwidth=0, padx=12, pady=10,
+                           relief='flat', selectbackground=PALETTE['cold'])
+        self.detail.pack(side='left', fill='both', expand=True)
+        dscroll = ttk.Scrollbar(detail_text_frame, orient='vertical', command=self.detail.yview)
+        self.detail.configure(yscrollcommand=dscroll.set, state='disabled')
+        dscroll.pack(side='right', fill='y')
+        self._set_text(self.detail, 'Clique sur « Actualiser les langues » pour charger l’inventaire, puis sélectionne une langue.')
+
+        self._make_batch_logs_tab(tab3)
+        diag_head = ttk.Frame(tab2)
+        diag_head.pack(fill='x', pady=(0, 8))
+        ttk.Label(diag_head, text='Journal technique et environnement', style='Section.TLabel').pack(side='left')
+        ttk.Button(diag_head, text='Paramètres', style='Quiet.TButton', command=lambda: self._toggle_settings(True)).pack(side='right')
+        self.explain = Text(tab2, wrap='word', font=('Consolas', 10), bg=PALETTE['white'],
+                            fg=PALETTE['ink'], padx=13, pady=12, borderwidth=0)
+        self.explain.pack(fill='both', expand=True)
+        self._set_text(self.explain,
+            'Aucun diagnostic chargé.\n\n'
+            '1. Vérifie les sources dans Paramètres (RGL, WordBench, gf.exe).\n'
+            '2. Clique sur « Actualiser les langues » : le scan est en lecture seule.\n'
+            '3. Choisis une langue puis lance le mode light ou quick.\n'
+            '4. Consulte les journaux et les résultats dans les onglets voisins.\n\n'
+            'IMPORTANT : un résultat quick positif ne prouve pas les 15 capacités génération pratique.\n'
+            'Practical requiert des profils et preuves WordBench spécifiques à la langue.')
+
+    def _toggle_settings(self, show: bool | None = None) -> None:
+        target = (not self._settings_open) if show is None else bool(show)
+        if target == self._settings_open:
+            return
+        self._settings_open = target
+        if target:
+            self.settings_frame.pack(fill='x', pady=(0, 10), before=self.workflow)
+            self.settings_button.configure(text='✕  Masquer les paramètres')
+        else:
+            self.settings_frame.pack_forget()
+            self.settings_button.configure(text='⚙  Paramètres')
+
+    def _sort_languages(self, column: str) -> None:
+        if column == self._sort_language_column:
+            self._sort_language_reverse = not self._sort_language_reverse
+        else:
+            self._sort_language_column = column
+            self._sort_language_reverse = False
+        self._render_rows()
+
+    def _refresh_metrics(self) -> None:
+        """Never confuse compile success with verified practical readiness."""
+        if not hasattr(self, 'metric_languages'):
+            return
+        self.metric_languages.set(str(len(self._rows)) if self._rows else '—')
+        by_mode = {(r['mode'], r['code']): r for r in self._batch_log_rows}
+        light = [r for (m, _), r in by_mode.items() if m == 'light']
+        quick = [r for (m, _), r in by_mode.items() if m == 'quick']
+        self.metric_light.set(f"{sum(r['status'] == 'ok' for r in light)} / {len(light)}" if light else '—')
+        self.metric_quick.set(f"{sum(r['status'] == 'ok' for r in quick)} / {len(quick)}" if quick else '—')
+        self.metric_attention.set(str(sum(r['status'] in ('error', 'timeout', 'interrupted') for r in quick))
+                                  if quick else '—')
+
+    def _open_selected_log(self, _event=None) -> None:
+        """Contextual journal action, selected mode first, fallback to available proof."""
+        code = next(iter(self.tree.selection()), None)
+        if not code:
+            messagebox.showinfo('Journaux', 'Sélectionne d’abord une langue.')
+            return
+        mode = self.wb_mode.get() if self.wb_mode.get() in ('light', 'quick') else 'quick'
+        item = self._rows.get(code, {})
+        if not item.get(f'wordbench_{mode}_log'):
+            mode = 'quick' if item.get('wordbench_quick_log') else 'light'
+        # The central lot view is the single place for consulting log evidence.
+        self.log_filter.set('Tous')
+        self._open_batch_logs()
+        key = f'{mode}:{code}'
+        if self.batch_tree.exists(key):
+            self.batch_tree.selection_set(key)
+            self.batch_tree.see(key)
+            self._display_batch_log()
+        else:
+            self._show_wordbench_log(code)
+
+    def _make_batch_logs_tab(self, parent) -> None:
+        """One central, searchable view for all historical and new log evidence."""
+        heading = ttk.Frame(parent)
+        heading.pack(fill='x', pady=(0, 9))
+        ttk.Label(heading, text='Historique des validations', style='Section.TLabel').pack(side='left')
+        self.batch_count = StringVar(value='Aucun lot enregistré')
+        ttk.Label(heading, textvariable=self.batch_count, style='Small.TLabel').pack(side='right')
+        toolbar = ttk.Frame(parent)
+        toolbar.pack(fill='x', pady=(0, 9))
+        ttk.Label(toolbar, text='Résultats').pack(side='left', padx=(0, 8))
+        selection = ttk.Combobox(toolbar, textvariable=self.log_filter, state='readonly', width=21,
+                                 values=('Tous', 'Échecs et délais', 'Non applicables', 'Réussites'))
+        selection.pack(side='left', padx=(0, 9))
+        selection.bind('<<ComboboxSelected>>', lambda _e: self._render_batch_logs())
+        ttk.Button(toolbar, text='Actualiser les journaux', command=self._reload_batch_logs).pack(side='left', padx=(0, 6))
+        ttk.Button(toolbar, text='Exporter tous les journaux', style='Primary.TButton',
+                   command=self._export_batch_logs).pack(side='right')
+        ttk.Label(parent,
+                  text='Choisis une ligne : son journal apparaît dessous. Les résultats historiques light et quick restent séparés.',
+                  style='Small.TLabel').pack(anchor='w', pady=(0, 8))
+        split = ttk.Panedwindow(parent, orient='vertical')
+        split.pack(fill='both', expand=True)
+        pane = ttk.Frame(split)
+        preview = ttk.Frame(split)
+        split.add(pane, weight=5)
+        split.add(preview, weight=4)
+        self.batch_tree = ttk.Treeview(pane, columns=('language', 'mode', 'status', 'duration', 'reason', 'log'),
+                                       show='headings', height=10, selectmode='browse')
+        for key, label, width in (('language', 'LANGUE', 86), ('mode', 'MODE', 86),
+                                  ('status', 'RÉSULTAT', 120), ('duration', 'SECONDES', 96),
+                                  ('reason', 'MOTIF', 275), ('log', 'FICHIER JOURNAL', 205)):
+            self.batch_tree.heading(key, text=label)
+            self.batch_tree.column(key, width=width, minwidth=65)
+        self.batch_tree.tag_configure('even', background=PALETTE['white'])
+        self.batch_tree.tag_configure('odd', background=PALETTE['row_alt'])
+        self.batch_tree.tag_configure('error', background=PALETTE['error_pale'])
+        self.batch_tree.tag_configure('pending', background=PALETTE['ochre_pale'])
+        scroll = ttk.Scrollbar(pane, orient='vertical', command=self.batch_tree.yview)
+        self.batch_tree.configure(yscrollcommand=scroll.set)
+        self.batch_tree.pack(side='left', fill='both', expand=True)
+        scroll.pack(side='right', fill='y')
+        self.batch_tree.bind('<<TreeviewSelect>>', self._display_batch_log)
+        self.batch_tree.bind('<Double-Button-1>', self._display_batch_log)
+        ttk.Label(preview, text='PREUVE / SORTIE COMPILATEUR', style='Eyebrow.TLabel').pack(anchor='w', pady=(7, 7))
+        text_wrap = ttk.Frame(preview)
+        text_wrap.pack(fill='both', expand=True)
+        self.batch_text = Text(text_wrap, wrap='word', height=12, font=('Consolas', 10),
+                               bg=PALETTE['white'], fg=PALETTE['ink'], borderwidth=0,
+                               padx=12, pady=10, selectbackground=PALETTE['cold'])
+        self.batch_text.pack(side='left', fill='both', expand=True)
+        bscroll = ttk.Scrollbar(text_wrap, orient='vertical', command=self.batch_text.yview)
+        bscroll.pack(side='right', fill='y')
+        self.batch_text.configure(yscrollcommand=bscroll.set, state='disabled')
+
+    def _reload_batch_logs(self) -> None:
+        root = Path(self.output_dir.get()).expanduser()
+        self._batch_log_rows = load_batch_log_rows(root)
+        self.batch_count.set(summarize_batch(self._batch_log_rows))
+        self._render_batch_logs()
+        self._refresh_metrics()
+
+    def _render_batch_logs(self) -> None:
+        if not hasattr(self, "batch_tree"):
+            return
+        previous = self.batch_tree.selection()
+        chosen = previous[0] if previous else None
+        self.batch_tree.delete(*self.batch_tree.get_children())
+        self._log_records = {}
+        kind = self.log_filter.get()
+        for record in self._batch_log_rows:
+            status = record['status']
+            if kind == 'Échecs et délais' and status not in ('error', 'timeout', 'interrupted'):
+                continue
+            if kind == 'Non applicables' and status != 'not_applicable':
+                continue
+            if kind == 'Réussites' and status != 'ok':
+                continue
+            key = f"{record['mode']}:{record['code']}"
+            self._log_records[key] = record
+            visual_status = {'ok': 'Réussi', 'error': 'Erreur', 'timeout': 'Délai dépassé',
+                             'not_applicable': 'Non applicable', 'interrupted': 'Interrompu',
+                             'not_tested': 'Non testé'}.get(status, status)
+            tag = ('error' if status in ('error', 'interrupted')
+                   else 'pending' if status in ('timeout', 'not_applicable')
+                   else 'even' if len(self._log_records) % 2 == 0 else 'odd')
+            self.batch_tree.insert('', 'end', iid=key, tags=(tag,),
+                values=(record['code'], record['mode'], visual_status,
+                        record.get('duration_seconds') if record.get('duration_seconds') is not None else '—',
+                        record.get('reason') or '—',
+                        Path(record['log_path']).name if record.get('log_path') else '—'))
+        if chosen and self.batch_tree.exists(chosen):
+            self.batch_tree.selection_set(chosen)
+        elif self.batch_tree.get_children():
+            self.batch_tree.selection_set(self.batch_tree.get_children()[0])
+        self._display_batch_log()
+
+    def _display_batch_log(self, _event=None) -> None:
+        ids = self.batch_tree.selection()
+        if not ids:
+            self._set_text(self.batch_text, 'Aucun journal correspondant à ce filtre.')
+            return
+        record = self._log_records.get(ids[0])
+        if record is None:
+            return
+        root = Path(self.output_dir.get()).expanduser()
+        header = (f"{record['code']} — mode {record['mode']} — {record['status']}\n"
+                  f"Motif : {record.get('reason') or 'aucun'}\n"
+                  f"Journal : {record.get('log_path') or 'absent'}\n\n")
+        self._set_text(self.batch_text, header + read_log(root, record, limit=120_000))
+
+    def _open_batch_logs(self) -> None:
+        self._reload_batch_logs()
+        self.tabs.select(self.batch_logs_tab)
+
+    def _export_batch_logs(self) -> None:
+        root = Path(self.output_dir.get()).expanduser()
+        if not root.is_dir():
+            messagebox.showinfo('Journaux de lot', 'Aucun dossier de résultats encore créé.')
+            return
+        try:
+            records = load_batch_log_rows(root)
+            if not records:
+                messagebox.showinfo('Journaux de lot', 'Aucun test WordBench enregistré.')
+                return
+            file = root / 'wordbench_batch_all_logs.txt'
+            file.write_text(format_batch_report(root, records), encoding='utf-8')
+            self.batch_count.set(summarize_batch(records))
+            self._set_text(self.batch_text, f'Export créé : {file}\n\n'
+                           'Il contient les résultats et les journaux light/quick de toutes les langues enregistrées.')
+            messagebox.showinfo('Journaux de lot', f'Rapport unique créé :\n{file}')
+        except (OSError, ValueError) as exc:
+            messagebox.showerror('Export des journaux', str(exc))
+
+    def _path_row(self, parent, idx: int, label: str, variable: StringVar, directory: bool, executable: bool = False) -> None:
         ttk.Label(parent, text=label).grid(row=idx, column=0, sticky="w", padx=3, pady=3)
         ttk.Entry(parent, textvariable=variable).grid(row=idx, column=1, sticky="ew", padx=5, pady=3)
         def choose() -> None:
-            value = filedialog.askdirectory(initialdir=variable.get() or str(Path.home())) if directory else filedialog.askopenfilename(filetypes=[("JSON", "*.json"), ("Tous", "*.*")])
+            types = [("Compilateur GF", "gf.exe"), ("Exécutables", "*.exe"), ("Tous", "*.*")] if executable else [("JSON", "*.json"), ("Tous", "*.*")]
+            value = filedialog.askdirectory(initialdir=variable.get() or str(Path.home())) if directory else filedialog.askopenfilename(filetypes=types)
             if value:
                 variable.set(value)
         ttk.Button(parent, text="Parcourir…", command=choose).grid(row=idx, column=2, sticky="e", padx=3, pady=3)
@@ -871,13 +1316,24 @@ class DiagnosticWindow(Tk):
         else:
             messagebox.showwarning("WordBench introuvable", wordbench_missing_message(Path(self.wordbench_root.get())))
 
+    def _auto_gf(self) -> None:
+        preferred = Path(self.gf_executable.get().strip()) if self.gf_executable.get().strip() else None
+        found = resolve_gf_executable(preferred, workspace=Path(self.workspace.get()))
+        if found is None:
+            messagebox.showwarning("GF introuvable", missing_gf_message(Path(self.workspace.get())))
+            return
+        self.gf_executable.set(str(found))
+        self.state_text.set("Compilateur GF détecté : " + str(found))
+
     def _show_dir(self) -> None:
         dest = Path(self.output_dir.get()).expanduser()
         if not dest.is_dir():
             messagebox.showinfo("Dossier", "Le dossier de sortie n'existe pas encore.")
             return
-        # Display a path; avoid invoking a system shell or external process.
-        messagebox.showinfo("Dossier de sortie", "Fichiers créés dans :\n" + str(dest.resolve()))
+        if os.name == 'nt' and hasattr(os, 'startfile'):
+            os.startfile(str(dest.resolve()))  # Windows ShellExecute; no cmd.exe
+        else:
+            messagebox.showinfo('Dossier de sortie', 'Fichiers créés dans :\n' + str(dest.resolve()))
 
     @staticmethod
     def _save_error(phase: str, exc: Exception, *, output_dir: Path,
@@ -899,33 +1355,56 @@ class DiagnosticWindow(Tk):
             pass
         return {"phase": phase, "message": str(exc), "traceback": full, "log_path": path or ""}
 
-    def _show_wordbench_log(self) -> None:
+    def _show_wordbench_log(self, code: str | None = None) -> None:
+        """Display the log for one code, not whichever row the UI auto-selected.
+
+        On a completed batch, the failed language is explicitly selected before
+        showing this pane. Logs are only readable from the Observatory output.
+        """
         selected = self.tree.selection()
-        if not selected:
-            messagebox.showinfo("Journal WordBench", "Sélectionne une langue dans le tableau.")
+        if code is None:
+            code = selected[0] if selected else None
+        if code is None:
+            messagebox.showinfo("Journal WordBench", "Sélectionne une langue ou clique sur « Dernier échec WB ».")
             return
-        item = self._rows.get(selected[0], {})
-        log = item.get('wordbench_quick_log')
+        item = self._rows.get(code, {})
+        log_mode = self.wb_mode.get() if self.wb_mode.get() in ('quick', 'light') else 'quick'
+        log = item.get(f'wordbench_{log_mode}_log')
         if not log:
-            messagebox.showinfo("Journal WordBench", "Aucun journal de test rapide n'existe pour cette langue.")
+            hint = (f" Dernier échec disponible : {self._last_failed_code}. "
+                    "Clique sur « Dernier échec WB ».") if self._last_failed_code and self._last_failed_code != code else ''
+            messagebox.showinfo("Journal WordBench", f"Aucun journal de test {log_mode} pour {code}." + hint)
             return
         try:
             path = Path(log).resolve()
             permitted = (Path(self.output_dir.get()).resolve() / 'wordbench_logs').resolve()
             if not path.is_relative_to(permitted) or not path.is_file():
-                raise ValueError("Chemin du journal invalide")
+                raise ValueError("Journal inexistant ou hors du dossier Observatory")
             content = path.read_text(encoding='utf-8', errors='replace')[-40_000:]
-            self._set_text(self.explain, f"Journal WordBench — {selected[0]}\n{path}\n\n{content}")
+            reason = item.get(f'wordbench_{log_mode}_reason') or 'aucun'
+            self._set_text(self.explain, f"Journal WordBench ({log_mode}) — {code}\nStatut : {item.get(f'wordbench_{log_mode}')}\nMotif : {reason}\n{path}\n\n{content}")
             self.tabs.select(self.diagnostic_tab)
         except (OSError, ValueError) as exc:
             messagebox.showerror("Journal WordBench", str(exc))
+
+    def _show_last_wordbench_failure(self) -> None:
+        code = self._last_failed_code
+        if code is None:
+            messagebox.showinfo("Journal WordBench", "Aucun échec WordBench n'est enregistré dans ce catalogue.")
+            return
+        if self.tree.exists(code):
+            self.tree.selection_set(code)
+            self.tree.see(code)
+            self._show_selection()
+        self._show_wordbench_log(code)
 
     def _start(self) -> None:
         if self._running:
             return
         root = self.rgl_root.get().strip()
         if not root:
-            messagebox.showerror("RGL manquante", "Choisis le dossier RGL avant de scanner.")
+            self._toggle_settings(True)
+            messagebox.showerror('RGL manquante', 'Choisis le dossier RGL dans Paramètres avant de scanner.')
             return
         self._running = True
         self.run_button.configure(state="disabled")
@@ -960,37 +1439,62 @@ class DiagnosticWindow(Tk):
         state = "disabled" if busy else "normal"
         self.wb_selected_button.configure(state=state)
         self.wb_all_button.configure(state=state)
+        self.wb_retry_button.configure(state=state)
         self.run_button.configure(state=state)
         self.wb_stop_button.configure(state="normal" if busy and self._cancel_wordbench.is_set() is False else "disabled")
+        if busy:
+            self.progress.pack(fill='x', pady=(1, 6), before=self._status_line)
+        else:
+            self.progress.pack_forget()
 
     def _stop_wordbench(self) -> None:
         self._cancel_wordbench.set()
         self.wb_stop_button.configure(state="disabled")
         self.state_text.set("Annulation demandée : termine le test courant, puis arrête.")
 
-    def _start_wordbench(self, all_languages: bool) -> None:
+    def _start_wordbench(self, all_languages: bool, retry_failed: bool = False) -> None:
         if self._running:
             return
         # Keep WordBench out of source folders and use a separate process.
         if not self._result:
             messagebox.showinfo("Inventaire", "Lance d'abord Scanner les langues.")
             return
-        selected = [x['code'] for x in self._result['inventory']['languages']] if all_languages else list(self.tree.selection())
-        if not selected:
-            messagebox.showinfo("Sélection", "Sélectionne une ou plusieurs langues dans le tableau.")
-            return
         mode = self.wb_mode.get()
+        if retry_failed:
+            if mode not in ('quick', 'light'):
+                messagebox.showinfo("Validation", "Le bouton Retester échecs/délais concerne les modes quick et light.")
+                return
+            selected = [code for code, row in self._rows.items()
+                        if row.get(f'wordbench_{mode}') in ('error', 'timeout', 'interrupted')]
+        else:
+            selected = [x['code'] for x in self._result['inventory']['languages']] if all_languages else list(self.tree.selection())
+        if not selected:
+            messagebox.showinfo("Sélection", "Aucune langue à retester." if retry_failed else "Sélectionne une ou plusieurs langues dans le tableau.")
+            return
+        try:
+            timeout = int(self.wb_timeout.get())
+            if not 5 <= timeout <= 3600:
+                raise ValueError()
+        except ValueError:
+            messagebox.showwarning("Délai invalide", "Indique un délai de 5 à 3600 secondes par langue.")
+            return
         found_wb = resolve_wordbench_root(Path(self.wordbench_root.get()), Path(self.workspace.get()))
         if found_wb is None:
             messagebox.showwarning("WordBench introuvable", wordbench_missing_message(Path(self.wordbench_root.get())))
             return
         self.wordbench_root.set(str(found_wb))
+        preferred_gf = Path(self.gf_executable.get().strip()) if self.gf_executable.get().strip() else None
+        found_gf = resolve_gf_executable(preferred_gf, workspace=Path(self.workspace.get()))
+        if found_gf is None:
+            messagebox.showwarning("Compilateur GF introuvable", missing_gf_message(Path(self.workspace.get())))
+            return
+        self.gf_executable.set(str(found_gf))
         if mode == 'practical' and not (found_wb / 'src/gf_wordbench/practical/cli.py').is_file():
             messagebox.showwarning("Extension pratique absente",
                 "WordBench est détecté, mais l'extension de validation pratique n'est pas installée.\n\n"
                 "Tu peux tester en mode quick. Le mode practical exige l'extension WordBench et les profils de scénarios propres à chaque langue.")
             return
-        if all_languages and not messagebox.askyesno("Confirmation", f"Tester {len(selected)} langues, une à la fois, en mode {mode} ?\n"
+        if (all_languages or retry_failed) and not messagebox.askyesno("Confirmation", f"Tester {len(selected)} langues, une à la fois, en mode {mode} ?\n"
                                                    "Cela peut prendre du temps. Les sources ne seront pas modifiées."):
             return
         self._running = True
@@ -1000,7 +1504,7 @@ class DiagnosticWindow(Tk):
         self.state_text.set(f"WordBench {mode} : {len(selected)} langues sélectionnées…")
         values = dict(inventory=self._result['inventory'], rgl_root=Path(self.rgl_root.get()),
                       wordbench_root=found_wb, output_dir=Path(self.output_dir.get()),
-                      codes=selected, mode=mode, timeout=90,
+                      codes=selected, mode=mode, timeout=timeout, gf_executable=found_gf,
                       practical_profile=Path(self.profile_path.get()) if self.profile_path.get().strip() else Path(self._result['output_dir']) / 'practical_generation_profile.json',
                       validation_profiles_root=Path(self.validation_profiles_root.get()) if self.validation_profiles_root.get().strip() else None,
                       stop=self._cancel_wordbench)
@@ -1042,29 +1546,55 @@ class DiagnosticWindow(Tk):
                                          ("Journal : " + details['log_path'] if details['log_path'] else ""))
                 elif kind == 'wordbench_success':
                     batch, scanned = value
-                    self._show_result(scanned)
-                    done = sum(r['status'] == 'ok' for r in batch['results'])
-                    failed = [r for r in batch['results'] if r['status'] not in ('ok', 'cancelled')]
-                    message = f"WordBench {batch['mode']} : {batch['completed']} traitées, {done} réussies, {len(failed)} non réussies."
+                    current = batch.get('batch_results', batch['results'])
+                    done = sum(r['status'] == 'ok' for r in current)
+                    failed = [r for r in current if r['status'] in ('error', 'timeout', 'interrupted')]
+                    not_applicable = sum(r['status'] == 'not_applicable' or
+                                         (r['status'] == 'not_tested' and r.get('reason') == 'light_cat_module_absent')
+                                         for r in current)
+                    focus = failed[0]['code'] if failed else (current[-1]['code'] if current else None)
+                    self._show_result(scanned, preferred_code=focus)
+                    message = (f"WordBench {batch['mode']} : {batch['completed']} traitées, "
+                               f"{done} réussies, {len(failed)} échecs/délais, "
+                               f"{not_applicable} non applicables.")
                     if failed:
                         first = failed[0]
-                        message += f" {first['code']} : {first.get('reason') or first['status']}. Voir journal WB."
+                        message += f" {first['code']} : {first.get('reason') or first['status']}. Détails dans les journaux."
                     self.state_text.set(message)
+                    self.log_filter.set('Échecs et délais' if failed else 'Tous')
+                    self._open_batch_logs()
+                    key = f"{batch['mode']}:{focus}" if focus else None
+                    if key and self.batch_tree.exists(key):
+                        self.batch_tree.selection_set(key)
+                        self.batch_tree.see(key)
+                        self._display_batch_log()
                 else:
                     self._show_result(value)
         except queue.Empty:
             pass
         self.after(120, self._poll)
 
-    def _show_result(self, result: dict) -> None:
+    def _show_result(self, result: dict, *, preferred_code: str | None = None) -> None:
+        previous_selection = self.tree.selection()
+        old_code = previous_selection[0] if previous_selection else None
         self._result = result
         cat = result['catalog']
         self._rows = {entry['code']: entry for entry in cat['languages']}
+        failures = [code for code, row in self._rows.items()
+                    if row.get('wordbench_quick') in ('error', 'timeout', 'interrupted')
+                    or row.get('wordbench_light') in ('error', 'timeout', 'interrupted')]
+        if preferred_code is not None and preferred_code in failures:
+            self._last_failed_code = preferred_code
+        elif failures:
+            self._last_failed_code = failures[0]
+        else:
+            self._last_failed_code = None
         counts = cat['counts']
         self.count_text.set(f"{len(self._rows)} langues | {counts['ready']} prêtes | "
                             f"{counts['needs_work']} à compléter | {counts['unverified']} non vérifiées")
-        self.state_text.set("Diagnostic terminé — fichiers dans " + result['output_dir'])
+        self.state_text.set('Inventaire prêt. Sélectionne une langue ou consulte les journaux historiques.')
         self._render_rows()
+        self._reload_batch_logs()
         env = result['diagnostic']
         lines = ["GF Observatory — Rapport local", "", self.count_text.get(),
                  "", "RGL : " + str(env['rgl_root']),
@@ -1079,28 +1609,73 @@ class DiagnosticWindow(Tk):
                   "'structural_gaps' ne sont PAS des fonctions linguistiques manquantes."]
         self._set_text(self.explain, '\n'.join(lines))
         if self._rows:
-            code = next(iter(self._rows))
+            code = next((c for c in (preferred_code, old_code, self._last_failed_code)
+                         if c and self.tree.exists(c)), next(iter(self._rows)))
             self.tree.selection_set(code)
+            self.tree.see(code)
             self._show_selection()
 
     def _render_rows(self) -> None:
         if not hasattr(self, 'tree'):
             return
         term = self.filter_text.get().casefold().strip()
-        selected = self.tree.selection()
-        chosen = selected[0] if selected else None
+        chosen = set(self.tree.selection())
         self.tree.delete(*self.tree.get_children())
-        for code, item in sorted(self._rows.items()):
-            if term and term not in code.casefold() and term not in item.get('status', '').casefold() and term not in item.get('project_id', '').casefold():
+        filtered = []
+        for code, item in self._rows.items():
+            combined = ' '.join(str(item.get(field) or '') for field in ('code', 'project_id', 'status', 'name_hint'))
+            if term and term not in combined.casefold():
                 continue
-            dom = {d.get('domain'): d.get('status') for d in item.get('domains', [])}
-            self.tree.insert('', 'end', iid=code,
-                             values=(code, item.get('structural_status', '?'), item.get('wordbench_quick', 'non testé'), item['status'],
-                                     dom.get('encyclopedic', 'non vérifié'), dom.get('procedural', 'non vérifié'),
-                                     len(item.get('missing', [])), len(item.get('unverified', []))))
-        if chosen and self.tree.exists(chosen):
-            self.tree.selection_set(chosen)
+            which = self.language_filter.get()
+            light = item.get('wordbench_light')
+            quick = item.get('wordbench_quick')
+            if which == 'À examiner (quick)' and quick not in ('error', 'timeout', 'interrupted'):
+                continue
+            if which == 'Quick réussi' and quick != 'ok':
+                continue
+            if which == 'Light réussi' and light != 'ok':
+                continue
+            if which == 'Pratique non vérifiée' and item.get('status') != 'unverified':
+                continue
+            filtered.append((code, item))
+        key = self._sort_language_column
+        def sortvalue(pair):
+            code, item = pair
+            status = item.get('wordbench_quick' if key == 'wordbench' else ('wordbench_light' if key == 'light' else key))
+            if key == 'verified':
+                return (len(item.get('missing', [])), len(item.get('unverified', [])), code)
+            return str(status if key not in ('code', 'project') else (code if key == 'code' else item.get('project_id', '')) or '').casefold()
+        filtered.sort(key=sortvalue, reverse=self._sort_language_reverse)
+        names = {'ok': '✓ Réussi', 'error': '✕ Erreur', 'timeout': '◷ Délai dépassé',
+                 'interrupted': 'Interrompu', 'not_applicable': '— Sans objet',
+                 'not_tested': '— Non testé', None: '— Non testé'}
+        for index, (code, item) in enumerate(filtered):
+            quick = item.get('wordbench_quick')
+            light = item.get('wordbench_light')
+            practical = item.get('status')
+            tag = 'error' if quick in ('error', 'interrupted') else ('pending' if quick == 'timeout'
+                  else 'odd' if index % 2 else 'even')
+            required_left = len(item.get('unverified', [])) + len(item.get('missing', []))
+            total = 15
+            verified = max(0, total - required_left)
+            self.tree.insert('', 'end', iid=code, tags=(tag,), values=(
+                code, item.get('project_id') or '—',
+                'Complète' if item.get('structural_status') == 'candidate' else 'Partielle',
+                names.get(light, str(light or '— Non testé')),
+                names.get(quick, str(quick or '— Non testé')),
+                {'ready': '✓ Validée', 'needs_work': 'Échec prouvé', 'unverified': '— Non vérifiée'}.get(practical, practical),
+                f'{verified} / {total} vérifiées'))
+        to_reselect = [code for code in chosen if self.tree.exists(code)]
+        if to_reselect:
+            self.tree.selection_set(to_reselect)
             self._show_selection()
+        elif self.tree.get_children():
+            self.tree.selection_set(self.tree.get_children()[0])
+            self._show_selection()
+        else:
+            self.selection_heading.set('Aucune langue dans cette vue')
+            self.selection_hint.set('Change le filtre ou actualise l’inventaire.')
+            self._set_text(self.detail, 'Aucun résultat pour ce filtre.')
 
     def _show_selection(self, _event=None) -> None:
         selected = self.tree.selection()
@@ -1109,9 +1684,18 @@ class DiagnosticWindow(Tk):
         item = self._rows.get(selected[0])
         if not item:
             return
+        self.selection_heading.set(f"{item['code']}  ·  {item.get('project_id') or 'Langue RGL'}")
+        self.selection_hint.set(
+            f"Light : {item.get('wordbench_light', 'non testé')}    |    "
+            f"Quick : {item.get('wordbench_quick', 'non testé')}    |    "
+            f"génération pratique : {item.get('status', 'non vérifié')} — preuve indépendante exigée")
         detail = [f"Langue : {item['code']}  / Projet WordBench : {item.get('project_id', '?')}",
                   f"Statut pratique : {item.get('status')}",
                   f"Source des preuves : {item.get('evidence_status')}",
+                  f"WordBench light (Cat seulement) : {item.get('wordbench_light', 'non testé')}",
+                  f"Module léger : {item.get('wordbench_light_module') or 'aucun'}",
+                  f"Motif light : {item.get('wordbench_light_reason') or 'aucun'}",
+                  f"Journal light : {item.get('wordbench_light_log') or 'aucun'}",
                   f"WordBench quick (un module) : {item.get('wordbench_quick', 'non testé')}",
                   f"Journal WordBench : {item.get('wordbench_quick_log') or 'aucun'}",
                   f"Motif WordBench : {item.get('wordbench_quick_reason') or 'aucun'}",
