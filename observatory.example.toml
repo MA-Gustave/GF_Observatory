@@ -1,0 +1,10 @@
+[api]
+bind = "127.0.0.1"
+port = 8765
+
+[state]
+# Private derived state, never place this within a WordBench export directory.
+database = ".gf-observatory/observatory.sqlite3"
+
+[security]
+source_writes = false

@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gf-observatory"
+version = "1.0.0rc1"
+description = "Local-first, read-only observation and analysis of GF WordBench evidence"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+gf-observatory = "gf_observatory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+gf_observatory = ["web/*.html", "web/*.css", "web/*.js"]

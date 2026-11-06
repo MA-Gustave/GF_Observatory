@@ -1,0 +1,16 @@
+<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GF Observatory — preuves linguistiques</title><link rel="stylesheet" href="/style.css"></head>
+<body><header><div class="wrap head"><div class="logo">◇</div><div><p class="eyebrow">GF / RGL · Observation indépendante</p><h1>GF Observatory</h1><p class="sub">Vérification et suivi des preuves WordBench — 14 langues × 15 intentions utiles</p></div></div></header>
+<main class="wrap"><section class="notice" role="note"><strong>Preuves candidates, pas une certification.</strong>
+Le ZIP pilote ne contient pas le manifeste canonique WordBench ni la revue humaine approuvée. Aucun RuntimeSet n’est publié ou activé.</section>
+<section class="controls"><label for="batch">Campagne observée</label><select id="batch" aria-label="Choisir un lot"></select>
+<button id="reload" type="button">Actualiser</button><span id="message" role="status" aria-live="polite"></span></section>
+<section id="metrics" class="metrics" aria-label="Indicateurs du périmètre"></section>
+<div class="layout"><section class="panel"><div class="sectiontitle"><h2>Langues observées</h2><small id="langhelp">Sélectionne une langue pour voir ses scénarios</small></div><div id="langs" class="langs"></div></section>
+<section class="panel details"><div class="sectiontitle"><h2 id="detailtitle">Détails des 15 intentions</h2><small id="detailmeta"></small></div>
+<div class="toolbar"><label for="statusfilter">Filtrer</label><select id="statusfilter"><option value="all">Tous les résultats</option><option value="candidate_for_review">Candidats</option><option value="probe_failed">Échecs</option><option value="warning">Alertes de surface</option></select></div>
+<div id="scenarios" class="scenarios"></div></section></div>
+<section class="panel bottom"><h2>Provenance et limites</h2><div id="source" class="source"></div>
+<p class="muted">Les marqueurs de sortie suspects ne constituent pas une revue grammaticale. Les sorties sans alerte sont également non vérifiées. Les vérifications des fichiers ZIP sont locales : elles ne remplacent pas les empreintes d’un manifeste canonique émis par WordBench.</p></section>
+</main><footer><div class="wrap">GF Observatory · Lecture seule · Aucune exécution GF, aucune modification des sources · Données privées sur ce poste</div></footer>
+<script src="/app.js"></script></body></html>

@@ -1,9 +1,0 @@
-# Snapshot-only exclusions.
-#
-# The GitHub Pages documentation tree is the newer, expanded documentation
-# surface. Keep the older Documentation_Frame version in Git for history,
-# but omit that duplicate baseline from ordinary SmartDump snapshots.
-GF_Observatory_Documentation_Frame/
-
-# Snapshot bookkeeping
-SMARTDUMP_INDEX.txt

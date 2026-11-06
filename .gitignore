@@ -1,60 +1,13 @@
-/SmartSnap.pyw
-
-# Local/editor/test artifacts
 __pycache__/
 *.py[cod]
+*.egg-info/
 .pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.cache/
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-desktop.ini
-
-# Local environments
-.venv/
-venv/
-env/
-ENV/
-
-# Generated/build output
-build/
-dist/
-coverage/
-htmlcov/
 .coverage
-*.gfo
-*.pgf
-
-# Temporary and backup files
-*.tmp
-*.tmp*
-*.temp
-*.swp
-*.swo
-*~
-*.bak
-*.bak_*
-*.bak-*
-*.backup
-*.backup-*
-*.backup_*
-
-# Local environment/secrets
-.env
-.env.*
-!.env.example
-!*.example
-*.pem
-*.key
-ZmartZnap.pyw
-GitSink.bat
-
-# Observatory practical diagnostic output
-Observatory_Diagnostic/
-GF_Observatory_Diagnostic_Output/
-practical_catalog.json
-practical_catalog.csv
-rgl_inventory.json
+.gf-observatory/
+observatory.toml
+.venv/
+dist/
+build/
+*.db
+*.db-shm
+*.db-wal
